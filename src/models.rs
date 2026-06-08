@@ -5,6 +5,7 @@ use chrono::{DateTime, Utc};
 pub struct StockRatingData {
     pub ticker: String,
     pub company_name: String,
+    pub provider: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_updated: Option<DateTime<Utc>>,
     pub valuation_ratios: ValuationRatios,
@@ -19,7 +20,6 @@ pub struct ValuationRatios {
     pub pe_ratio: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub forward_pe_ratio: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub ev_to_ebitda: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pb_ratio: Option<f64>,
@@ -27,7 +27,6 @@ pub struct ValuationRatios {
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct FinancialHealth {
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub return_on_equity: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub debt_to_equity: Option<f64>,
@@ -57,7 +56,6 @@ pub enum Recommendation {
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct MarketSentiment {
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub target_price_consensus: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_price: Option<f64>,

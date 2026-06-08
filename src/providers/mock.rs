@@ -25,6 +25,10 @@ impl StockDataProvider for MockDataProvider {
     fn list_supported_tickers(&self) -> Vec<String> {
         vec!["AAPL".to_string(), "MSFT".to_string(), "GOOGL".to_string(), "TSLA".to_string(), "AMZN".to_string()]
     }
+
+    fn provider_name(&self) -> &'static str {
+        "MockDataProvider"
+    }
 }
 
 impl MockDataProvider {
@@ -32,6 +36,7 @@ impl MockDataProvider {
         StockRatingData {
             ticker: ticker.to_string(),
             company_name: company_name.to_string(),
+            provider: "MockDataProvider".to_string(),
             last_updated: Some(Utc::now()),
             valuation_ratios: ValuationRatios::default(),
             financial_health: FinancialHealth::default(),
