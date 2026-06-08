@@ -1,0 +1,1 @@
+check @README.md  and @ressources/stock_data_generic_api.yaml to create an app which collects form muliple sources stock data and vizualize them in a web dashboard - start with a mock implemtation of a generic stock data collection service use @ressources/stock_data_generic_api.yaml  models inside your code and visualize them in a web based dashboard.
