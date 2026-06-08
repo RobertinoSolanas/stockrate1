@@ -1150,6 +1150,7 @@ pub fn setup_router(providers: Vec<Box<dyn StockDataProvider + Send + Sync>>) ->
         .route("/", get(index_handler))
         .route("/dashboard", get(dashboard_handler))
         .route("/compare", get(compare_handler))
+        .route("/portfolio", get(portfolio_handler))
         .route("/api/query", get(api_query_handler))
         .with_state(state)
 }
@@ -1247,4 +1248,231 @@ async fn api_query_handler(
         },
         None => Err((StatusCode::NOT_FOUND, format!("Provider '{}' not found", provider_name))),
     }
+}
+
+async fn portfolio_handler(
+    State(state): State<AppState>,
+) -> Html<String> {
+    let providers = state.providers.read().unwrap();
+    let all_tickers: Vec<String> = vec![
+        "AAPL".to_string(), "MSFT".to_string(), "GOOGL".to_string(), "TSLA".to_string(),
+        "AMZN".to_string(), "NVDA".to_string(), "META".to_string(), "AMD".to_string(),
+    ];
+    
+    let mut stock_records: Vec<(String, String, StockRatingData)> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    
+    for ticker in &all_tickers {
+        for provider in providers.iter() {
+            if let Some(data) = provider.get_stock_data(ticker) {
+                if seen.insert(ticker.clone()) {
+                    stock_records.push((ticker.clone(), provider.provider_name().to_string(), data));
+                } else {
+                    stock_records.push((ticker.clone(), provider.provider_name().to_string(), data));
+                }
+                break;
+            }
+        }
+    }
+    
+    let mut valuation_data: Vec<(String, f64, String)> = Vec::new();
+    let mut growth_data: Vec<(String, f64, String)> = Vec::new();
+    let mut health_data: Vec<(String, f64, String)> = Vec::new();
+    let mut sentiment_data: Vec<(String, f64, String)> = Vec::new();
+    
+    let colors = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#f97316", "#06b6d4"];
+    
+    for (i, (ticker, _provider, data)) in stock_records.iter().enumerate().take(8) {
+        let pe = data.valuation_ratios.pe_ratio.unwrap_or(0.0);
+        let roe = data.financial_health.return_on_equity.unwrap_or(0.0) * 100.0;
+        let rev_growth = data.growth_metrics.revenue_growth_3y.unwrap_or(0.0) * 100.0;
+        let upside = match (data.market_sentiment.target_price_consensus, data.market_sentiment.current_price) {
+            (Some(t), Some(c)) if c > 0.0 => ((t - c) / c) * 100.0,
+            _ => 0.0,
+        };
+        
+        valuation_data.push((ticker.clone(), pe, "#3b82f6".to_string()));
+        growth_data.push((ticker.clone(), rev_growth, "#10b981".to_string()));
+        health_data.push((ticker.clone(), roe, "#f59e0b".to_string()));
+        sentiment_data.push((ticker.clone(), upside, "#8b5cf6".to_string()));
+    }
+    
+    let val_svg = create_bar_chart(&valuation_data, &colors.iter().take(8).cloned().collect::<Vec<&str>>(), "P/E Ratio Comparison (Lower is Better)");
+    let growth_svg = create_bar_chart(&growth_data, &colors.iter().take(8).cloned().collect::<Vec<&str>>(), "3-Year Revenue Growth Comparison");
+    let health_svg = create_bar_chart(&health_data, &colors.iter().take(8).cloned().collect::<Vec<&str>>(), "Return on Equity (ROE) Comparison");
+    let sentiment_svg = create_bar_chart(&sentiment_data, &colors.iter().take(8).cloned().collect::<Vec<&str>>(), "Analyst Upside/Downside % (Price Target vs Current)");
+    
+    let mut ticker_rows = String::new();
+    let mut ticker_cards = String::new();
+    
+    for (ticker, _provider, data) in &stock_records {
+        let rec = data.market_sentiment.recommendation_consensus.clone().unwrap_or(Recommendation::Hold);
+        let rec_text = format_recommendation(&rec);
+        let rec_color = match rec {
+            Recommendation::StrongBuy => "#10b981",
+            Recommendation::Buy => "#22c55e",
+            Recommendation::Hold => "#f59e0b",
+            Recommendation::Sell => "#f97316",
+            Recommendation::StrongSell => "#ef4444",
+        };
+        let pe = data.valuation_ratios.pe_ratio.unwrap_or(0.0);
+        let roe = data.financial_health.return_on_equity.unwrap_or(0.0) * 100.0;
+        let rev_growth = data.growth_metrics.revenue_growth_3y.unwrap_or(0.0);
+        let upside = match (data.market_sentiment.target_price_consensus, data.market_sentiment.current_price) {
+            (Some(t), Some(c)) if c > 0.0 => ((t - c) / c) * 100.0,
+            _ => 0.0,
+        };
+        
+        let rev_pct = rev_growth * 100.0;
+        ticker_rows.push_str(&format!(
+            "<tr><td><a href=\"/dashboard?ticker={ticker}\" style=\"color:var(--accent-blue);text-decoration:none;font-weight:600;\">{ticker}</a></td><td style=\"color:{rec_color};font-weight:600;\">{rec_text}</td><td>{pe:.1}</td><td>{roe:.1}%</td><td>{rev_pct:+.1}%</td><td style=\"color:{upside_color};font-weight:600;\">{upside:+.1}%</td></tr>",
+            rec_color = rec_color,
+            upside_color = if upside >= 0.0 { "#10b981" } else { "#ef4444" }
+        ));
+        
+        ticker_cards.push_str(&format!(
+            "<a href=\"/dashboard?ticker={ticker}\" class=\"ticker-card\">\n                <div class=\"ticker-card-symbol\" style=\"color:{rec_color};\">{ticker}</div>\n                <div class=\"ticker-card-label\">{rec_text}</div>\n                <div style=\"font-size:0.75rem;color:var(--text-muted);margin-top:4px;\">P/E: {pe:.1} | ROE: {roe:.1}%</div>\n            </a>",
+            rec_color = rec_color
+        ));
+    }
+    
+    Html(format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Portfolio - StockRating</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        :root {{
+            --bg-primary: #0b0f19;
+            --bg-card: #1a2236;
+            --bg-card-hover: #1f2a42;
+            --border: #2d3a52;
+            --text-primary: #f1f5f9;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --accent-blue: #3b82f6;
+            --green: #10b981;
+            --yellow: #f59e0b;
+            --red: #ef4444;
+        }}
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{ font-family: 'Inter', sans-serif; background: var(--bg-primary); color: var(--text-primary); min-height: 100vh; }}
+        .container {{ max-width: 1400px; margin: 0 auto; padding: 0 24px; position: relative; z-index: 1; }}
+        header {{ padding: 24px 0; border-bottom: 1px solid var(--border); margin-bottom: 32px; }}
+        .header-inner {{ display: flex; justify-content: space-between; align-items: center; }}
+        .logo {{ display: flex; align-items: center; gap: 12px; }}
+        .logo-icon {{ width: 40px; height: 40px; background: linear-gradient(135deg, var(--accent-blue), #8b5cf6); border-radius: 10px; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 1.1rem; color: white; }}
+        .logo-text {{ font-size: 1.3rem; font-weight: 700; }}
+        .logo-text span {{ color: var(--accent-blue); }}
+        .nav-bar {{ display: flex; gap: 8px; margin-bottom: 32px; padding: 6px; background: #111827; border-radius: 14px; border: 1px solid var(--border); width: fit-content; }}
+        .nav-link {{ padding: 10px 20px; border-radius: 10px; text-decoration: none; color: var(--text-secondary); font-weight: 500; font-size: 0.9rem; }}
+        .nav-link:hover {{ color: var(--text-primary); background: var(--bg-card); }}
+        .nav-link.active {{ background: var(--accent-blue); color: white; }}
+        .page-title {{ font-size: 1.8rem; font-weight: 700; margin-bottom: 8px; }}
+        .page-subtitle {{ color: var(--text-muted); margin-bottom: 32px; font-size: 0.95rem; }}
+        .chart-section {{ margin-bottom: 32px; }}
+        .chart-grid {{ display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px; }}
+        @media (max-width: 1100px) {{ .chart-grid {{ grid-template-columns: 1fr; }} }}
+        .chart-card {{ background: var(--bg-card); border: 1px solid var(--border); border-radius: 16px; padding: 24px; }}
+        .chart-title {{ font-size: 0.9rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 16px; }}
+        .data-table {{ width: 100%; border-collapse: separate; border-spacing: 0; margin-bottom: 40px; }}
+        .data-table th {{ background: var(--bg-card); padding: 16px; text-align: left; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); border-bottom: 1px solid var(--border); }}
+        .data-table th:first-child {{ border-radius: 12px 0 0 0; }}
+        .data-table th:last-child {{ border-radius: 0 12px 0 0; }}
+        .data-table td {{ padding: 16px; border-bottom: 1px solid var(--border); font-size: 0.95rem; }}
+        .data-table tr:last-child td {{ border-bottom: none; }}
+        .ticker-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 40px; }}
+        .ticker-card {{ background: var(--bg-card); border: 1px solid var(--border); border-radius: 16px; padding: 24px; text-align: center; text-decoration: none; transition: all 0.3s; }}
+        .ticker-card:hover {{ border-color: var(--accent-blue); background: var(--bg-card-hover); transform: translateY(-4px); }}
+        .ticker-card-symbol {{ font-size: 1.5rem; font-weight: 700; margin-bottom: 8px; }}
+        .ticker-card-label {{ font-size: 0.85rem; color: var(--text-muted); }}
+        section.card {{ background: var(--bg-card); border: 1px solid var(--border); border-radius: 16px; padding: 28px; margin-bottom: 32px; }}
+        section.card h2 {{ font-size: 1.1rem; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 20px; }}
+        footer {{ text-align: center; padding: 40px 0; color: var(--text-muted); font-size: 0.85rem; border-top: 1px solid var(--border); margin-top: 40px; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="header-inner">
+                <div class="logo">
+                    <div class="logo-icon">S</div>
+                    <div class="logo-text"><span>Stock</span>Rating</div>
+                </div>
+            </div>
+        </header>
+
+        <div class="nav-bar">
+            <a href="/" class="nav-link">Dashboard</a>
+            <a href="/dashboard?ticker=AAPL" class="nav-link">Analysis</a>
+            <a href="/compare?ticker=AAPL" class="nav-link">Compare</a>
+            <a href="/portfolio" class="nav-link active">Portfolio View</a>
+        </div>
+
+        <h1 class="page-title">Portfolio Overview</h1>
+        <p class="page-subtitle">Comparing all available stocks side-by-side across key metrics</p>
+
+        <section class="card">
+            <h2>Quick Select</h2>
+            <div class="ticker-grid">
+                {ticker_cards}
+            </div>
+        </section>
+
+        <section class="card">
+            <h2>All Stocks Comparison Table</h2>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Ticker</th>
+                        <th>Recommendation</th>
+                        <th>P/E Ratio</th>
+                        <th>ROE</th>
+                        <th>Rev Growth 3Y</th>
+                        <th>Upside %</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {ticker_rows}
+                </tbody>
+            </table>
+        </section>
+
+        <div class="chart-section">
+            <div class="chart-grid">
+                <div class="chart-card">
+                    <div class="chart-title">Valuation</div>
+                    {val_svg}
+                </div>
+                <div class="chart-card">
+                    <div class="chart-title">Growth</div>
+                    {growth_svg}
+                </div>
+                <div class="chart-card">
+                    <div class="chart-title">Financial Health</div>
+                    {health_svg}
+                </div>
+                <div class="chart-card">
+                    <div class="chart-title">Market Sentiment</div>
+                    {sentiment_svg}
+                </div>
+            </div>
+        </div>
+
+        <footer>
+            <p>StockRating Portfolio View • Multi-stock comparison • Not financial advice</p>
+        </footer>
+    </div>
+</body>
+</html>"#,
+        ticker_cards = ticker_cards,
+        ticker_rows = ticker_rows,
+        val_svg = val_svg,
+        growth_svg = growth_svg,
+        health_svg = health_svg,
+        sentiment_svg = sentiment_svg,
+    ))
 }
