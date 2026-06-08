@@ -689,6 +689,7 @@ fn html_page(data: &StockRatingData) -> String {
             <span class="provider-label">Provider:</span>
             <a href="/dashboard?ticker={ticker}" class="provider-btn active">MockDataProvider</a>
             <a href="/dashboard?ticker={ticker}&provider=second" class="provider-btn">SecondMockProvider</a>
+            <a href="/dashboard?ticker={ticker}&provider=finnhub" class="provider-btn">FinnhubDataProvider</a>
         </div>
 
         <div class="sentiment-hero">
@@ -1171,6 +1172,7 @@ async fn dashboard_handler(
     
     let data_provider = match provider_name {
         "second" => providers.iter().find(|p| p.provider_name() == "SecondMockDataProvider"),
+        "finnhub" => providers.iter().find(|p| p.provider_name() == "FinnhubDataProvider"),
         _ => providers.iter().find(|p| p.provider_name() == "MockDataProvider"),
     };
 
@@ -1207,13 +1209,20 @@ async fn compare_handler(
     let second_data = providers.iter().find(|p| p.provider_name() == "SecondMockDataProvider")
         .map(|p| (**p).get_stock_data(&ticker))
         .flatten();
+    let finnhub_data = providers.iter().find(|p| p.provider_name() == "FinnhubDataProvider")
+        .map(|p| (**p).get_stock_data(&ticker))
+        .flatten();
 
-    match (mock_data, second_data) {
-        (Some(a), Some(b)) => Html(html_compare(&a, &b)),
-        _ => Html(format!(
+    // Prefer MockDataProvider vs FinnhubDataProvider if Finnhub available, otherwise Mock vs Second
+    if let (Some(a), Some(b)) = (mock_data.clone(), finnhub_data) {
+        Html(html_compare(&a, &b))
+    } else if let (Some(a), Some(b)) = (mock_data, second_data) {
+        Html(html_compare(&a, &b))
+    } else {
+        Html(format!(
             r#"<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>{ticker} - Compare</title><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet"><style>*{{margin:0;padding:0;box-sizing:border-box}}body{{font-family:'Inter',sans-serif;background:#0b0f19;color:#f1f5f9;min-height:100vh;display:flex;align-items:center;justify-content:center}}.container{{text-align:center;padding:40px}}h2{{font-size:2rem;margin-bottom:12px}}p{{color:#94a3b8;margin-bottom:8px;font-size:1.1rem}}a{{color:#3b82f6;text-decoration:none;font-weight:600}}</style></head><body><div class="container"><h2>Compare Unavailable</h2><p>Both providers must have data for "{ticker}" to compare.</p><p><a href="/dashboard?ticker={ticker}">&#8592; View Single Provider</a></p></div></body></html>"#,
             ticker = ticker,
-        )),
+        ))
     }
 }
 
@@ -1227,6 +1236,7 @@ async fn api_query_handler(
     
     let data_provider = match provider_name {
         "second" => providers.iter().find(|p| p.provider_name() == "SecondMockDataProvider"),
+        "finnhub" => providers.iter().find(|p| p.provider_name() == "FinnhubDataProvider"),
         _ => providers.iter().find(|p| p.provider_name() == "MockDataProvider"),
     };
 
