@@ -63,7 +63,7 @@ pub fn format_market_cap(value: Option<i64>) -> String {
     }
 }
 
-fn health_score_label(score: f64, d_to_e: f64) -> (&'static str, &'static str) {
+pub fn health_score_label(score: f64, d_to_e: f64) -> (&'static str, &'static str) {
     let score = if score > 0.3 { 3.0 } else if score > 0.1 { 2.0 } else { 1.0 };
     let debt_score = if d_to_e < 0.5 { 3.0 } else if d_to_e < 1.0 { 2.0 } else { 1.0 };
     let total = score + debt_score;
@@ -74,7 +74,7 @@ fn health_score_label(score: f64, d_to_e: f64) -> (&'static str, &'static str) {
     }
 }
 
-fn valuation_assessment(pe_ratio: Option<f64>, ev_ebitda: Option<f64>) -> (&'static str, &'static str) {
+pub fn valuation_assessment(pe_ratio: Option<f64>, ev_ebitda: Option<f64>) -> (&'static str, &'static str) {
     let pe = pe_ratio.unwrap_or(30.0);
     let ev = ev_ebitda.unwrap_or(25.0);
     if pe < 15.0 && ev < 10.0 {
@@ -88,7 +88,7 @@ fn valuation_assessment(pe_ratio: Option<f64>, ev_ebitda: Option<f64>) -> (&'sta
     }
 }
 
-fn growth_assessment(rev: Option<f64>, eps: Option<f64>) -> (&'static str, &'static str) {
+pub fn growth_assessment(rev: Option<f64>, eps: Option<f64>) -> (&'static str, &'static str) {
     let avg = (rev.unwrap_or(0.0) + eps.unwrap_or(0.0)) / 2.0;
     if avg > 0.20 {
         ("Strong", "#10b981")
@@ -101,7 +101,7 @@ fn growth_assessment(rev: Option<f64>, eps: Option<f64>) -> (&'static str, &'sta
     }
 }
 
-fn create_bar_chart(data_points: &[(String, f64, String)], colors: &[&str], title: &str) -> String {
+pub fn create_bar_chart(data_points: &[(String, f64, String)], colors: &[&str], title: &str) -> String {
     let max_val = data_points.iter().map(|(_, v, _)| v.abs()).fold(0.0f64, f64::max);
     if max_val == 0.0 {
         return String::new();
@@ -113,10 +113,8 @@ fn create_bar_chart(data_points: &[(String, f64, String)], colors: &[&str], titl
     
     let font = "Inter,sans-serif";
     let txt_fill = "#94a3b8";
-    let svg = format!("<svg viewBox=\"0 0 {chart_width} {height}\" width=\"100%\" style=\"max-width:{chart_width}px;min-height:{height}px\">\n    <text x=\"{}\" y=\"20\" text-anchor=\"middle\" fill=\"{}\" font-size=\"13\" font-weight=\"600\" font-family=\"{}\">{}</text>",
-        chart_width/2, txt_fill, font, title);
     
-    for (i, (label, value, color)) in data_points.iter().enumerate() {
+    for (i, (label, value, _color)) in data_points.iter().enumerate() {
         let y = 35.0 + i as f64 * row_height;
         let bar_width = ((*value / max_val) * (chart_width - 140) as f64) as f64;
         let display_val = if *value > 1.0 { format!("{:.1}", value) } else { format!("{:.2}", value) };
@@ -138,7 +136,7 @@ fn create_bar_chart(data_points: &[(String, f64, String)], colors: &[&str], titl
     let mut svg_result = format!("<svg viewBox=\"0 0 {chart_width} {height}\" width=\"100%\" style=\"max-width:{chart_width}px;min-height:{height}px\">\n    <text x=\"{}\" y=\"20\" text-anchor=\"middle\" fill=\"{}\" font-size=\"13\" font-weight=\"600\" font-family=\"{}\">{}</text>",
         chart_width/2, txt_fill, font, title);
     
-    for (i, (label, value, color)) in data_points.iter().enumerate() {
+    for (i, (label, value, _color)) in data_points.iter().enumerate() {
         let y = 35.0 + i as f64 * row_height;
         let bar_width = ((*value / max_val) * (chart_width - 140) as f64) as f64;
         let display_val = if *value > 1.0 { format!("{:.1}", value) } else { format!("{:.2}", value) };
@@ -153,7 +151,7 @@ fn create_bar_chart(data_points: &[(String, f64, String)], colors: &[&str], titl
     svg_result
 }
 
-fn create_comparison_chart(data_a: &[f64], data_b: &[f64], labels: &[&str], titles: &[&str]) -> String {
+pub fn create_comparison_chart(data_a: &[f64], data_b: &[f64], labels: &[&str], titles: &[&str]) -> String {
     let max_val = data_a.iter().chain(data_b.iter()).cloned().fold(0.0f64, f64::max);
     if max_val == 0.0 {
         return String::new();

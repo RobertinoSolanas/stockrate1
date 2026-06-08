@@ -44,7 +44,7 @@ pub struct GrowthMetrics {
     pub eps_growth_3y: Option<f64>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum Recommendation {
     StrongBuy,

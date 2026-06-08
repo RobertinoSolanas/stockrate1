@@ -1,6 +1,7 @@
 mod models;
 mod providers;
 mod routes;
+mod tests;
 
 use providers::mock::MockDataProvider;
 use providers::second_mock::SecondMockDataProvider;
