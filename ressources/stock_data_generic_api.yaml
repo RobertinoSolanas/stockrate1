@@ -1,0 +1,144 @@
+openapi: 3.0.3
+info:
+  title: Stock Rating Data Aggregator API
+  description: A unified API to fetch fundamental, financial, and sentiment data required to score and rate stocks.
+  version: 1.0.0
+servers:
+  - url: https://api.yourdomain.com/v1
+    description: Production server
+paths:
+  /stocks/{ticker}/rating-data:
+    get:
+      summary: Get consolidated data for stock rating
+      description: Retrieves a comprehensive dataset for a specific stock ticker, combining valuation, health, growth, and analyst sentiment metrics.
+      parameters:
+        - name: ticker
+          in: path
+          required: true
+          description: The stock symbol (e.g., AAPL, MSFT)
+          schema:
+            type: string
+            example: AAPL
+      responses:
+        '200':
+          description: Successful retrieval of stock data
+          content:
+            application:json:
+              schema:
+                $ref: '#/components/schemas/StockRatingData'
+        '404':
+          description: Ticker not found
+        '500':
+          description: Internal server error or upstream data provider failure
+
+components:
+  schemas:
+    StockRatingData:
+      type: object
+      required:
+        - ticker
+        - companyName
+        - valuationRatios
+        - financialHealth
+        - growthMetrics
+        - marketSentiment
+      properties:
+        ticker:
+          type: string
+          example: AAPL
+        companyName:
+          type: string
+          example: Apple Inc.
+        lastUpdated:
+          type: string
+          format: date-time
+          example: "2026-06-08T14:32:00Z"
+        valuationRatios:
+          $ref: '#/components/schemas/ValuationRatios'
+        financialHealth:
+          $ref: '#/components/schemas/FinancialHealth'
+        growthMetrics:
+          $ref: '#/components/schemas/GrowthMetrics'
+        marketSentiment:
+          $ref: '#/components/schemas/MarketSentiment'
+
+    ValuationRatios:
+      type: object
+      properties:
+        peRatio:
+          type: number
+          format: float
+          example: 28.5
+          description: Price-to-Earnings ratio
+        forwardPeRatio:
+          type: number
+          format: float
+          example: 25.2
+        evToEbitda:
+          type: number
+          format: float
+          example: 18.3
+          description: Enterprise Value to EBITDA
+        pbRatio:
+          type: number
+          format: float
+          example: 35.1
+          description: Price-to-Book ratio
+
+    FinancialHealth:
+      type: object
+      properties:
+        returnOnEquity:
+          type: number
+          format: float
+          example: 1.54
+          description: ROE expressed as a decimal or percentage (e.g., 1.54 = 154%)
+        debtToEquity:
+          type: number
+          format: float
+          example: 1.45
+          description: Total Debt divided by Total Shareholders' Equity
+        freeCashFlow:
+          type: integer
+          format: int64
+          example: 97500000000
+          description: Trailing twelve months (TTM) Free Cash Flow in USD
+        currentRatio:
+          type: number
+          format: float
+          example: 0.98
+
+    GrowthMetrics:
+      type: object
+      properties:
+        revenueGrowth3Y:
+          type: number
+          format: float
+          example: 0.085
+          description: 3-Year Compounded Annual Revenue Growth Rate
+        epsGrowth3Y:
+          type: number
+          format: float
+          example: 0.112
+          description: 3-Year Compounded Annual EPS Growth Rate
+
+    MarketSentiment:
+      type: object
+      properties:
+        targetPriceConsensus:
+          type: number
+          format: float
+          example: 210.50
+          description: Average analyst target price
+        currentPrice:
+          type: number
+          format: float
+          example: 185.25
+        recommendationConsensus:
+          type: string
+          enum: [STRONG_BUY, BUY, HOLD, SELL, STRONG_SELL]
+          example: BUY
+        analystCount:
+          type: integer
+          example: 42
+          description: Total number of analysts covering the stock
