@@ -1,6 +1,10 @@
-# stockrate1
-A stock rate app writen in rust providing a dashboard and plugins for multiple stock rates
-
-This app uses a internal capsulated model and process to fetch and visualize stock ratings by muliple sources - an anticorupption layer based on the models of stock_data_generic_api.yaml are used
-
-This app is wriiten in rust to enhance robustness and is unit tested it provides a plugin mechanisem to add new sources of stock ratings sources very quickly
+# StockRating
+A Rust web application that aggregates and visualizes stock ratings from multiple data sources via a dashboard API.
+Architecture: Axum web server + typed Rust models matching stock_data_generic_api.yaml OpenAPI spec + trait-based provider plugin system.
+Providers implement `StockDataProvider` trait (mock, yahoo, alphavantage, etc.) enabling zero-downtime source swapping.
+Data flows: provider → serde-deserialized models → routes render HTML/JSON responses.
+Run: `cargo run` then open http://localhost:3000 (dashboard) or http://localhost:3000/api/query?ticker=AAPL (JSON API).
+Ends: `GET /` index, `GET /dashboard?ticker=XYZ` HTML dashboard, `GET /api/query?ticker=XYZ` JSON endpoint.
+Models in `src/models.rs` mirror the YAML schema: StockRatingData, ValuationRatios, FinancialHealth, GrowthMetrics, MarketSentiment.
+MockDataProvider ships with AAPL/MSFT/GOOGL/TSLA/AMZN sample data for offline development.
+Dependencies: axum 0.7, serde, tokio, chrono — all async with RwLock for thread-safe state.
