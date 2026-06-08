@@ -29,6 +29,12 @@ struct CompareParams {
     ticker: String,
 }
 
+#[derive(Deserialize)]
+struct PortfolioQueryParams {
+    #[serde(rename = "provider")]
+    provider: Option<String>,
+}
+
 pub fn format_recommendation(rec: &Recommendation) -> String {
     match rec {
         Recommendation::StrongBuy => "STRONG BUY".to_string(),
@@ -1252,6 +1258,7 @@ async fn api_query_handler(
 
 async fn portfolio_handler(
     State(state): State<AppState>,
+    Query(params): Query<PortfolioQueryParams>,
 ) -> Html<String> {
     let providers = state.providers.read().unwrap();
     let all_tickers: Vec<String> = vec![
@@ -1259,18 +1266,25 @@ async fn portfolio_handler(
         "AMZN".to_string(), "NVDA".to_string(), "META".to_string(), "AMD".to_string(),
     ];
     
-    let mut stock_records: Vec<(String, String, StockRatingData)> = Vec::new();
-    let mut seen = std::collections::HashSet::new();
+    let selected_provider = params.provider.as_deref().unwrap_or("mock");
     
-    for ticker in &all_tickers {
-        for provider in providers.iter() {
+    let provider_name_filter = match selected_provider {
+        "second" => "SecondMockDataProvider",
+        "finnhub" => "FinnhubDataProvider",
+        _ => "MockDataProvider",
+    };
+    
+    let active_provider_name = providers.iter()
+        .find(|p| p.provider_name() == provider_name_filter)
+        .map(|p| p.provider_name())
+        .unwrap_or("MockDataProvider");
+    
+    let mut stock_records: Vec<(String, StockRatingData)> = Vec::new();
+    
+    if let Some(provider) = providers.iter().find(|p| p.provider_name() == provider_name_filter) {
+        for ticker in &all_tickers {
             if let Some(data) = provider.get_stock_data(ticker) {
-                if seen.insert(ticker.clone()) {
-                    stock_records.push((ticker.clone(), provider.provider_name().to_string(), data));
-                } else {
-                    stock_records.push((ticker.clone(), provider.provider_name().to_string(), data));
-                }
-                break;
+                stock_records.push((ticker.clone(), data));
             }
         }
     }
@@ -1282,7 +1296,7 @@ async fn portfolio_handler(
     
     let colors = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#f97316", "#06b6d4"];
     
-    for (i, (ticker, _provider, data)) in stock_records.iter().enumerate().take(8) {
+    for (ticker, data) in &stock_records {
         let pe = data.valuation_ratios.pe_ratio.unwrap_or(0.0);
         let roe = data.financial_health.return_on_equity.unwrap_or(0.0) * 100.0;
         let rev_growth = data.growth_metrics.revenue_growth_3y.unwrap_or(0.0) * 100.0;
@@ -1305,7 +1319,7 @@ async fn portfolio_handler(
     let mut ticker_rows = String::new();
     let mut ticker_cards = String::new();
     
-    for (ticker, _provider, data) in &stock_records {
+    for (ticker, data) in &stock_records {
         let rec = data.market_sentiment.recommendation_consensus.clone().unwrap_or(Recommendation::Hold);
         let rec_text = format_recommendation(&rec);
         let rec_color = match rec {
@@ -1335,6 +1349,34 @@ async fn portfolio_handler(
             rec_color = rec_color
         ));
     }
+    
+    let provider_btn_active = |name: &str, selected: &str| -> String {
+        if name == selected {
+            " class=\"provider-btn active\"".to_string()
+        } else {
+            String::new()
+        }
+    };
+    
+    let mock_active = provider_btn_active("MockDataProvider", active_provider_name);
+    let second_active = provider_btn_active("SecondMockDataProvider", active_provider_name);
+    let finnhub_active = provider_btn_active("FinnhubDataProvider", active_provider_name);
+    
+    let has_finnhub = providers.iter().any(|p| p.provider_name() == "FinnhubDataProvider");
+    
+    let provider_selector = format!(r#"<div class="provider-selector">
+            <span class="provider-label">Data Provider:</span>
+            <a href="/portfolio?provider=mock" class="provider-btn{}">MockDataProvider</a>
+            <a href="/portfolio?provider=second" class="provider-btn{}">SecondMockProvider</a>{}
+        </div>"#, mock_active, second_active,
+        if has_finnhub {
+            format!("<a href=\"/portfolio?provider=finnhub\" class=\"provider-btn{}\">FinnhubDataProvider</a>", finnhub_active)
+        } else {
+            String::new()
+        }
+    );
+    
+    let has_data = !stock_records.is_empty();
     
     Html(format!(
         r#"<!DOCTYPE html>
@@ -1371,8 +1413,14 @@ async fn portfolio_handler(
         .nav-link {{ padding: 10px 20px; border-radius: 10px; text-decoration: none; color: var(--text-secondary); font-weight: 500; font-size: 0.9rem; }}
         .nav-link:hover {{ color: var(--text-primary); background: var(--bg-card); }}
         .nav-link.active {{ background: var(--accent-blue); color: white; }}
+        .provider-selector {{ display: flex; gap: 8px; margin-bottom: 32px; align-items: center; }}
+        .provider-label {{ color: var(--text-muted); font-size: 0.85rem; font-weight: 500; margin-right: 8px; }}
+        .provider-btn {{ padding: 8px 16px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-card); color: var(--text-secondary); font-size: 0.85rem; font-weight: 500; cursor: pointer; transition: all 0.2s; text-decoration: none; }}
+        .provider-btn:hover {{ border-color: var(--accent-blue); color: var(--text-primary); }}
+        .provider-btn.active {{ background: var(--accent-blue); border-color: var(--accent-blue); color: white; }}
         .page-title {{ font-size: 1.8rem; font-weight: 700; margin-bottom: 8px; }}
         .page-subtitle {{ color: var(--text-muted); margin-bottom: 32px; font-size: 0.95rem; }}
+        .provider-badge {{ display: inline-flex; align-items: center; gap: 8px; padding: 6px 14px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; font-weight: 600; font-size: 0.85rem; color: var(--accent-blue); margin-bottom: 32px; }}
         .chart-section {{ margin-bottom: 32px; }}
         .chart-grid {{ display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px; }}
         @media (max-width: 1100px) {{ .chart-grid {{ grid-template-columns: 1fr; }} }}
@@ -1391,6 +1439,8 @@ async fn portfolio_handler(
         .ticker-card-label {{ font-size: 0.85rem; color: var(--text-muted); }}
         section.card {{ background: var(--bg-card); border: 1px solid var(--border); border-radius: 16px; padding: 28px; margin-bottom: 32px; }}
         section.card h2 {{ font-size: 1.1rem; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 20px; }}
+        .no-data {{ text-align: center; padding: 60px 20px; color: var(--text-muted); }}
+        .no-data h2 {{ font-size: 1.5rem; color: var(--text-primary); margin-bottom: 12px; }}
         footer {{ text-align: center; padding: 40px 0; color: var(--text-muted); font-size: 0.85rem; border-top: 1px solid var(--border); margin-top: 40px; }}
     </style>
 </head>
@@ -1411,11 +1461,33 @@ async fn portfolio_handler(
             <a href="/compare?ticker=AAPL" class="nav-link">Compare</a>
             <a href="/portfolio" class="nav-link active">Portfolio View</a>
         </div>
+        
+        {provider_selector}
 
         <h1 class="page-title">Portfolio Overview</h1>
+        <div class="provider-badge">
+            <span>●</span>
+            <span>Viewing data from: <strong>{active_provider_name}</strong></span>
+        </div>
         <p class="page-subtitle">Comparing all available stocks side-by-side across key metrics</p>
+        
+        {no_data_message}
+        
+        {main_content}
 
-        <section class="card">
+        <footer>
+            <p>StockRating Portfolio View • {active_provider_name} • Not financial advice</p>
+        </footer>
+    </div>
+</body>
+</html>"#,
+        provider_selector = provider_selector,
+        active_provider_name = active_provider_name,
+        no_data_message = if has_data { String::new() } else {
+            "<div class=\"no-data\"><h2>No Data Available</h2><p>No stock data found for provider \"{active_provider_name}\".</p></div>".to_string()
+        },
+        main_content = if has_data {
+            format!(r#"<section class="card">
             <h2>Quick Select</h2>
             <div class="ticker-grid">
                 {ticker_cards}
@@ -1460,19 +1532,15 @@ async fn portfolio_handler(
                     {sentiment_svg}
                 </div>
             </div>
-        </div>
-
-        <footer>
-            <p>StockRating Portfolio View • Multi-stock comparison • Not financial advice</p>
-        </footer>
-    </div>
-</body>
-</html>"#,
-        ticker_cards = ticker_cards,
-        ticker_rows = ticker_rows,
-        val_svg = val_svg,
-        growth_svg = growth_svg,
-        health_svg = health_svg,
-        sentiment_svg = sentiment_svg,
+        </div>"#,
+            ticker_cards = ticker_cards,
+            ticker_rows = ticker_rows,
+            val_svg = val_svg,
+            growth_svg = growth_svg,
+            health_svg = health_svg,
+            sentiment_svg = sentiment_svg,
+        )} else {
+            String::new()
+        },
     ))
 }
