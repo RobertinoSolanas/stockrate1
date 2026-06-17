@@ -3,8 +3,10 @@ use chrono::Utc;
 use crate::providers::StockDataProvider;
 use reqwest;
 use serde::Deserialize;
+use serde_json;
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct FinnhubProfile {
     #[serde(rename = "name")]
     company_name: String,
@@ -23,6 +25,7 @@ struct FinnhubProfile {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct FinnhubQuote {
     c: Option<f64>, // current price
     d: Option<f64>, // change
@@ -34,37 +37,82 @@ struct FinnhubQuote {
     t: Option<i64>, // timestamp
 }
 
-#[derive(Debug, Deserialize)]
-struct FinnhubMetrics {
-    metrics: Option<FinnhubMetricData>,
+#[derive(Debug, Deserialize, Default)]
+#[allow(dead_code)]
+struct FinnhubMetricEntry {
+    period: Option<String>,
+    v: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, Default)]
-struct FinnhubMetricData {
+#[allow(dead_code)]
+struct FinnhubSeriesAnnual {
+    #[serde(rename = "currentRatio")]
+    current_ratio: Option<Vec<FinnhubMetricEntry>>,
+    #[serde(rename = "longtermDebtTotalAsset")]
+    longterm_debt_total_asset: Option<Vec<FinnhubMetricEntry>>,
+    #[serde(rename = "totalDebt/totalEquity")]
+    total_debt_total_equity: Option<Vec<FinnhubMetricEntry>>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[allow(dead_code)]
+struct FinnhubSeries {
+    annual: Option<FinnhubSeriesAnnual>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[allow(dead_code)]
+struct FinnhubMetricScalar {
     #[serde(rename = "peAnnual")]
-    pe_ratio: Option<Vec<f64>>,
-    #[serde(rename = "pbRatioAnnual")]
-    pb_ratio: Option<Vec<f64>>,
-    #[serde(rename = "evToEbitdaAnnual")]
-    ev_to_ebitda: Option<Vec<f64>>,
-    #[serde(rename = "evToSalesAnnual")]
-    ev_to_sales: Option<Vec<f64>>,
-    #[serde(rename = "revenuePerEmployeeAnnual")]
-    revenue_per_employee: Option<Vec<f64>>,
-    #[serde(rename = "returnOnEquityAnnual")]
-    roe: Option<Vec<f64>>,
-    #[serde(rename = "debtEquityAnnual")]
-    debt_equity: Option<Vec<f64>>,
+    pe_annual: Option<f64>,
+    #[serde(rename = "peTTM")]
+    pe_ttm: Option<f64>,
+    #[serde(rename = "peNormalizedAnnual")]
+    pe_normalized: Option<f64>,
+    #[serde(rename = "forwardPE")]
+    forward_pe: Option<f64>,
+    #[serde(rename = "evEbitdaTTM")]
+    ev_ebitda_ttm: Option<f64>,
+    #[serde(rename = "pb")]
+    pb: Option<f64>,
+    #[serde(rename = "pbAnnual")]
+    pb_annual: Option<f64>,
+    #[serde(rename = "pbQuarterly")]
+    pb_quarterly: Option<f64>,
+    #[serde(rename = "roeTTM")]
+    roe_ttm: Option<f64>,
+    #[serde(rename = "roe5Y")]
+    roe_5y: Option<f64>,
+    #[serde(rename = "roeRfy")]
+    roe_rfy: Option<f64>,
+    #[serde(rename = "totalDebt/totalEquityAnnual")]
+    total_debt_equity_annual: Option<f64>,
+    #[serde(rename = "totalDebt/totalEquityQuarterly")]
+    total_debt_equity_quarterly: Option<f64>,
+    #[serde(rename = "epsGrowth3Y")]
+    eps_growth_3y: Option<f64>,
+    #[serde(rename = "revenueGrowth3Y")]
+    revenue_growth_3y: Option<f64>,
+    #[serde(rename = "revenueGrowthTTMYoy")]
+    revenue_growth_ttm: Option<f64>,
+    #[serde(rename = "currentRatioAnnual")]
+    current_ratio_annual: Option<f64>,
+    #[serde(rename = "currentRatioQuarterly")]
+    current_ratio_quarterly: Option<f64>,
     #[serde(rename = "freeCashFlowPerShareAnnual")]
-    fcf_per_share: Option<Vec<f64>>,
-    #[serde(rename = "dividendYieldAnnualizedAnnual")]
-    dividend_yield: Option<Vec<f64>>,
-    #[serde(rename = "dividendYieldUnitAnnualizedAnnual")]
-    dividend_yield_unit: Option<Vec<f64>>,
-    #[serde(rename = "epsAnnual")]
-    eps: Option<Vec<f64>>,
-    #[serde(rename = "revenuePerEmployeeTTM")]
-    revenue_per_employee_ttm: Option<Vec<f64>>,
+    fcf_per_share_annual: Option<f64>,
+    #[serde(rename = "freeCashFlowPerShareTTM")]
+    fcf_per_share_ttm: Option<f64>,
+    #[serde(rename = "marketCapitalization")]
+    market_cap: Option<f64>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[allow(dead_code)]
+struct FinnhubMetrics {
+    metric: Option<FinnhubMetricScalar>,
+    series: Option<FinnhubSeries>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -83,6 +131,7 @@ struct FinnhubRecommendation {
 
 pub struct FinnhubDataProvider {
     api_key: String,
+    #[allow(dead_code)]
     client: reqwest::Client,
 }
 
@@ -94,7 +143,7 @@ impl FinnhubDataProvider {
         }
     }
 
-    async fn fetch<T: serde::de::DeserializeOwned>(api_key: &str, url: &str) -> Result<T, String> {
+    async fn fetch<T: serde::de::DeserializeOwned>(_api_key: &str, url: &str) -> Result<T, String> {
         let client = reqwest::Client::new();
         let response = client.get(url).send().await.map_err(|e| e.to_string())?;
         let body = response.text().await.map_err(|e| e.to_string())?;
@@ -132,11 +181,21 @@ impl FinnhubDataProvider {
             "https://finnhub.io/api/v1/stock/metric?symbol={}&metric=all&token={}",
             ticker_upper, api_key
         );
-        let metrics: FinnhubMetrics = match Self::fetch(&api_key, &metrics_url).await {
+        let metrics_raw = match Self::fetch::<serde_json::Value>(&api_key, &metrics_url).await {
             Ok(m) => m,
-            Err(_) => return None,
+            Err(e) => {
+                eprintln!("Finnhub metrics fetch error: {}", e);
+                return None;
+            }
         };
-        let md = metrics.metrics.unwrap_or_default();
+        eprintln!("Finnhub metrics raw: {}", serde_json::to_string_pretty(&metrics_raw).unwrap_or_default());
+        let metrics: FinnhubMetrics = match serde_json::from_value(metrics_raw) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("Finnhub metrics deserialization error: {}", e);
+                return None;
+            }
+        };
 
         // Fetch recommendation trends
          let rec_url = format!(
@@ -151,34 +210,37 @@ impl FinnhubDataProvider {
         // Get the most recent recommendation
         let latest_rec = rec_trends.first();
 
-        // Build PE ratio from metrics (take last non-zero value)
-        let pe_ratio = md.pe_ratio.as_ref().and_then(|v| {
-            v.iter().rev().find(|&&x| x > 0.0).copied()
-        });
+        let m = metrics.metric.unwrap_or_default();
 
-        // Get forward PE approximation: use trailing PE / (1 + expected_growth)
-        // Finnhub doesn't provide forward PE directly, use trailing as fallback
-        let forward_pe_ratio = pe_ratio;
+        // PE ratio: prefer TTM, fall back to annual
+        let pe_ratio = m.pe_ttm.or(m.pe_normalized).or(m.pe_annual);
+
+        // Forward PE
+        let forward_pe_ratio = m.forward_pe.or(pe_ratio);
 
         // EV/EBITDA
-        let ev_to_ebitda = md.ev_to_ebitda.as_ref().and_then(|v| {
-            v.iter().rev().find(|&&x| x > 0.0).copied()
-        });
+        let ev_to_ebitda = m.ev_ebitda_ttm;
 
-        // P/B Ratio
-        let pb_ratio = md.pb_ratio.as_ref().and_then(|v| {
-            v.iter().rev().find(|&&x| x > 0.0).copied()
-        });
+        // P/B Ratio: prefer quarterly, fall back to annual
+        let pb_ratio = m.pb_quarterly.or(m.pb).or(m.pb_annual);
 
-        // ROE
-        let roe = md.roe.as_ref().and_then(|v| {
-            v.iter().rev().find(|&&x| x > 0.0).copied()
-        });
+        // ROE: prefer TTM, fall back to annual (fy) or 5y
+        let roe = m.roe_ttm.or(m.roe_rfy).or(m.roe_5y).map(|x| x / 100.0);
 
-        // Debt/Equity
-        let debt_to_equity = md.debt_equity.as_ref().and_then(|v| {
-            v.iter().rev().find(|&&x| x > 0.0).copied()
-        });
+        // Debt/Equity: prefer quarterly, fall back to annual
+        let debt_to_equity = m.total_debt_equity_quarterly.or(m.total_debt_equity_annual);
+
+        // Current ratio: prefer quarterly, fall back to annual
+        let current_ratio = m.current_ratio_quarterly.or(m.current_ratio_annual);
+
+        // EPS growth 3Y: Finnhub returns percentage, convert to decimal
+        let eps_growth_3y = m.eps_growth_3y.map(|x| x / 100.0);
+
+        // Revenue growth 3Y: Finnhub returns percentage, convert to decimal
+        let revenue_growth_3y = m.revenue_growth_3y.map(|x| x / 100.0).or(m.revenue_growth_ttm.map(|x| x / 100.0));
+
+        // Free cash flow per share (TTM)
+        let fcf_per_share = m.fcf_per_share_ttm.or(m.fcf_per_share_annual);
 
         // Current price from quote
         let current_price = quote.c;
@@ -247,27 +309,8 @@ impl FinnhubDataProvider {
             None => None,
         };
 
-        // Revenue growth (3Y): approximate from EPS growth trend
-        // Finnhub metrics have per-year EPS, we approximate
-        let eps_values = md.eps.as_ref();
-        let eps_growth_3y = match eps_values {
-            Some(v) if v.len() >= 3 => {
-                let recent = v.iter().rev().take(3).collect::<Vec<&f64>>();
-                if recent[0] > &0.0 && recent[2] > &0.0 {
-                    Some(((recent[0] / recent[2]).powf(1.0 / 2.0) - 1.0).abs())
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        };
-
         // Revenue growth approximation: use EPS growth as proxy when revenue data unavailable
-        let revenue_growth_3y = eps_growth_3y;
-
-        let fcf = md.fcf_per_share.as_ref().and_then(|v| {
-            v.iter().rev().find(|&&x| x > 0.0).copied()
-        });
+        let revenue_growth_3y = revenue_growth_3y.or(eps_growth_3y);
 
         Some(StockRatingData {
             ticker: ticker_upper,
@@ -283,8 +326,8 @@ impl FinnhubDataProvider {
             financial_health: FinancialHealth {
                 return_on_equity: roe,
                 debt_to_equity,
-                free_cash_flow: fcf.map(|x| (x * 1_000_000.0) as i64), // rough approximation per share to total
-                current_ratio: None, // Finnhub doesn't provide this directly
+                free_cash_flow: fcf_per_share.map(|x| x as i64),
+                current_ratio,
             },
             growth_metrics: GrowthMetrics {
                 revenue_growth_3y,

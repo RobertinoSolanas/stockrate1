@@ -9,6 +9,7 @@ impl SecondMockDataProvider {
         Self
     }
     
+    #[allow(dead_code)]
     pub fn provider_name(&self) -> &'static str {
         "SecondMockProvider"
     }
