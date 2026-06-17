@@ -10,7 +10,6 @@ impl MockDataProvider {
     }
 }
 
-# ds
 impl StockDataProvider for MockDataProvider {
     fn get_stock_data(&self, ticker: &str) -> Option<StockRatingData> {
         match ticker.to_uppercase().as_str() {
