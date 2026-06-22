@@ -1,0 +1,26 @@
+{
+  "name": "stockrate1",
+  "version": "1.0.0",
+  "description": "A Rust web application that aggregates and visualizes stock ratings from multiple data sources via API and provides a dashboard to show all stocks from different sources.",
+  "main": "index.js",
+  "scripts": {
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "test:e2e:headed": "playwright test --headed",
+    "test:e2e:report": "playwright show-report"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RobertinoSolanas/stockrate1.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/RobertinoSolanas/stockrate1/issues"
+  },
+  "homepage": "https://github.com/RobertinoSolanas/stockrate1#readme",
+  "devDependencies": {
+    "@playwright/test": "^1.61.0"
+  }
+}
