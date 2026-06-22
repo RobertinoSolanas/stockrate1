@@ -5,10 +5,12 @@ use axum::{
     routing::get,
     Router,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::models::{Recommendation, StockRatingData};
 use crate::providers::StockDataProvider;
+use crate::services::stock_aggregation::*;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -1081,7 +1083,59 @@ pub fn html_compare(data_a: &StockRatingData, data_b: &StockRatingData) -> Strin
     )
 }
 
-pub fn html_index(tickers: &[String]) -> String {
+pub fn create_all_stocks_svg_chart(chart_groups: &Vec<ChartGroup>, _tickers: &[String]) -> String {
+    if chart_groups.is_empty() {
+        return String::new();
+    }
+
+    let font = "Inter,sans-serif";
+    let txt_fill = "#94a3b8";
+    let mut svg_parts: Vec<String> = Vec::new();
+
+    for group in chart_groups {
+        if group.entries.is_empty() {
+            continue;
+        }
+
+        let max_val = group.entries.iter().map(|e| e.value.abs()).fold(0.0f64, f64::max);
+        if max_val == 0.0 {
+            continue;
+        }
+
+        let chart_width = 400;
+        let row_height = 44.0;
+        let bar_height = 32.0;
+        let entries = &group.entries;
+        let height = (entries.len() as f64 * row_height) as usize + 80;
+
+        let mut svg = format!("<svg viewBox=\"0 0 {} {}\" width=\"100%\" style=\"max-width:{}px;min-height:{}px\">\n", chart_width, height, chart_width, height);
+        svg.push_str(&format!("    <rect x=\"0\" y=\"0\" width=\"{}\" height=\"30\" fill=\"#111827\" rx=\"8\"/>\n", chart_width));
+        svg.push_str(&format!("    <text x=\"{}\" y=\"18\" text-anchor=\"middle\" fill=\"{}\" font-size=\"11\" font-weight=\"600\" font-family=\"{}\">{}</text>\n", chart_width/2, txt_fill, font, group.label));
+
+        for (i, entry) in entries.iter().enumerate() {
+            let y = 40.0 + i as f64 * row_height;
+            let bar_width = ((entry.value.abs() / max_val) * (chart_width - 170) as f64) as f64;
+            let display_val = if entry.value.abs() > 1.0 {
+                format!("{:.1}", entry.value)
+            } else {
+                format!("{:.2}", entry.value)
+            };
+            let clr = &group.color;
+
+            svg.push_str(&format!("\n            <text x=\"0\" y=\"{}\" fill=\"#64748b\" font-size=\"10\" font-family=\"{}\">{}</text>", y, font, entry.ticker));
+            svg.push_str(&format!("\n            <rect x=\"75\" y=\"{}\" width=\"{}\" height=\"{}\" rx=\"4\" fill=\"{}\" opacity=\"0.85\"/>", y - 8.0, f64::max(bar_width, 2.0), bar_height - 16.0, clr));
+            svg.push_str(&format!("\n            <text x=\"{}\" y=\"{}\" fill=\"#94a3b8\" font-size=\"9\" font-family=\"{}\">{}</text>", 79.0 + f64::max(bar_width, 2.0), y, font, display_val));
+            svg.push_str(&format!("\n            <text x=\"{}\" y=\"{}\" fill=\"#475569\" font-size=\"8\" font-family=\"{}\">{}</text>", 79.0 + f64::max(bar_width, 2.0) + 70.0, y, font, entry.provider));
+        }
+
+        svg.push_str("\n</svg>");
+        svg_parts.push(svg);
+    }
+
+    svg_parts.join("\n\n")
+}
+
+pub fn html_index(chart_groups: &[ChartGroup], tickers: &[String]) -> String {
     let mut ticker_cards = String::new();
     for ticker in tickers {
         ticker_cards.push_str(&format!(
@@ -1091,6 +1145,40 @@ pub fn html_index(tickers: &[String]) -> String {
             </a>"#,
         ));
     }
+
+    let mut charts_html = String::new();
+    for group in chart_groups {
+        if group.entries.is_empty() {
+            continue;
+        }
+        let entries_html = group.entries.iter().map(|e| {
+            format!(
+                r#"<div class="chart-row">
+                    <span class="chart-ticker">{ticker}</span>
+                    <span class="chart-bar" style="width:{width}px;background:{color};"></span>
+                    <span class="chart-value">{value}{unit}</span>
+                    <span class="chart-provider">{provider}</span>
+                </div>"#,
+                ticker = e.ticker,
+                width = (e.value.abs() * 2.0).min(200.0) as usize,
+                color = group.color,
+                value = if e.value.abs() > 1.0 { format!("{:.1}", e.value) } else { format!("{:.2}", e.value) },
+                unit = group.unit,
+                provider = e.provider,
+            )
+        }).collect::<String>();
+
+        charts_html.push_str(&format!(r#"<div class="chart-section-card">
+            <div class="chart-section-title">{label} {unit}</div>
+            {entries}
+        </div>"#,
+            label = group.label,
+            unit = if group.unit.is_empty() { "" } else { &group.unit },
+            entries = entries_html,
+        ));
+    }
+
+    let has_charts = !charts_html.is_empty();
 
     format!(r#"<!DOCTYPE html>
 <html lang="en">
@@ -1103,46 +1191,400 @@ pub fn html_index(tickers: &[String]) -> String {
         :root {{
             --bg-primary: #0b0f19;
             --bg-card: #1a2236;
+            --bg-card-hover: #1f2a42;
             --border: #2d3a52;
+            --border-light: #3b4a66;
             --text-primary: #f1f5f9;
+            --text-secondary: #94a3b8;
             --text-muted: #64748b;
             --accent-blue: #3b82f6;
+            --accent-blue-glow: rgba(59, 130, 246, 0.3);
+            --green: #10b981;
+            --green-soft: rgba(16, 185, 129, 0.15);
+            --yellow: #f59e0b;
+            --yellow-soft: rgba(245, 158, 11, 0.15);
+            --red: #ef4444;
+            --red-soft: rgba(239, 68, 68, 0.15);
+            --blue-soft: rgba(59, 130, 246, 0.15);
+            --purple: #8b5cf6;
+            --purple-soft: rgba(139, 92, 246, 0.15);
         }}
+
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        body {{ font-family: 'Inter', sans-serif; background: var(--bg-primary); color: var(--text-primary); min-height: 100vh; }}
-        .container {{ max-width: 1000px; margin: 0 auto; padding: 60px 24px; }}
-        header {{ text-align: center; margin-bottom: 60px; }}
-        .logo {{ display: inline-flex; align-items: center; gap: 16px; margin-bottom: 24px; }}
-        .logo-icon {{ width: 56px; height: 56px; background: linear-gradient(135deg, var(--accent-blue), #8b5cf6); border-radius: 16px; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 1.5rem; color: white; }}
-        .logo-text {{ font-size: 2rem; font-weight: 800; letter-spacing: -0.03em; }}
+
+        body {{
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+        }}
+
+        .bg-grid {{
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background-image:
+                linear-gradient(rgba(59, 130, 246, 0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(59, 130, 246, 0.03) 1px, transparent 1px);
+            background-size: 50px 50px;
+            pointer-events: none;
+            z-index: 0;
+        }}
+
+        .bg-glow {{
+            position: fixed;
+            top: -200px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 800px;
+            height: 600px;
+            background: radial-gradient(circle, rgba(59, 130, 246, 0.08) 0%, transparent 70%);
+            pointer-events: none;
+            z-index: 0;
+        }}
+
+        .container {{
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 0 24px;
+            position: relative;
+            z-index: 1;
+        }}
+
+        header {{
+            padding: 24px 0;
+            border-bottom: 1px solid var(--border);
+            margin-bottom: 32px;
+        }}
+
+        .header-inner {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }}
+
+        .logo {{
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }}
+
+        .logo-icon {{
+            width: 40px;
+            height: 40px;
+            background: linear-gradient(135deg, var(--accent-blue), var(--purple));
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 800;
+            font-size: 1.1rem;
+            color: white;
+        }}
+
+        .logo-text {{
+            font-size: 1.3rem;
+            font-weight: 700;
+        }}
+
         .logo-text span {{ color: var(--accent-blue); }}
-        .subtitle {{ color: var(--text-muted); margin-bottom: 40px; font-size: 1.1rem; }}
-        .ticker-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; }}
-        .ticker-card {{ background: var(--bg-card); border: 1px solid var(--border); border-radius: 16px; padding: 32px 24px; text-align: center; text-decoration: none; transition: all 0.3s; }}
-        .ticker-card:hover {{ border-color: var(--accent-blue); background: #1f2a42; transform: translateY(-4px); }}
-        .ticker-card-symbol {{ font-size: 1.5rem; font-weight: 700; margin-bottom: 8px; }}
-        .ticker-card-label {{ font-size: 0.85rem; color: var(--text-muted); }}
-        footer {{ text-align: center; margin-top: 60px; padding-top: 32px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 0.85rem; }}
+
+        .nav-bar {{
+            display: flex;
+            gap: 8px;
+            margin-bottom: 32px;
+            padding: 6px;
+            background: var(--bg-secondary);
+            border-radius: 14px;
+            border: 1px solid var(--border);
+            width: fit-content;
+        }}
+
+        .nav-link {{
+            padding: 10px 20px;
+            border-radius: 10px;
+            text-decoration: none;
+            color: var(--text-secondary);
+            font-weight: 500;
+            font-size: 0.9rem;
+            transition: all 0.2s;
+        }}
+
+        .nav-link:hover {{
+            color: var(--text-primary);
+            background: var(--bg-card);
+        }}
+
+        .nav-link.active {{
+            background: var(--accent-blue);
+            color: white;
+        }}
+
+        .page-header {{
+            margin-bottom: 32px;
+        }}
+
+        .page-title {{
+            font-size: 2rem;
+            font-weight: 800;
+            margin-bottom: 8px;
+        }}
+
+        .page-subtitle {{
+            color: var(--text-muted);
+            font-size: 0.95rem;
+        }}
+
+        .config-bar {{
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            margin-bottom: 32px;
+            padding: 16px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            flex-wrap: wrap;
+        }}
+
+        .config-label {{
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            font-weight: 600;
+            margin-right: 4px;
+        }}
+
+        .config-select {{
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 8px 12px;
+            color: var(--text-primary);
+            font-size: 0.85rem;
+            font-family: 'Inter', sans-serif;
+            cursor: pointer;
+            outline: none;
+        }}
+
+        .config-select:focus {{
+            border-color: var(--accent-blue);
+        }}
+
+        .config-btn {{
+            padding: 8px 16px;
+            border-radius: 8px;
+            border: 1px solid var(--accent-blue);
+            background: transparent;
+            color: var(--accent-blue);
+            font-size: 0.85rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-decoration: none;
+            font-family: 'Inter', sans-serif;
+        }}
+
+        .config-btn:hover {{
+            background: var(--accent-blue);
+            color: white;
+        }}
+
+        .metrics-summary {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 16px;
+            margin-bottom: 32px;
+        }}
+
+        .metric-card {{
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+        }}
+
+        .metric-card-label {{
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: var(--text-muted);
+            margin-bottom: 8px;
+        }}
+
+        .metric-card-value {{
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--text-primary);
+        }}
+
+        .charts-container {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(500px, 1fr));
+            gap: 24px;
+            margin-bottom: 48px;
+        }}
+
+        @media (max-width: 1100px) {{
+            .charts-container {{ grid-template-columns: 1fr; }}
+        }}
+
+        .chart-section-card {{
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 24px;
+        }}
+
+        .chart-section-title {{
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            margin-bottom: 20px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--border);
+        }}
+
+        .chart-row {{
+            display: flex;
+            align-items: center;
+            padding: 6px 0;
+            gap: 12px;
+            font-size: 0.85rem;
+        }}
+
+        .chart-ticker {{
+            font-weight: 600;
+            color: var(--text-primary);
+            min-width: 50px;
+        }}
+
+        .chart-bar {{
+            height: 20px;
+            border-radius: 4px;
+            transition: width 0.3s ease;
+            min-width: 2px;
+        }}
+
+        .chart-value {{
+            font-weight: 600;
+            color: var(--text-secondary);
+            min-width: 80px;
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+        }}
+
+        .chart-provider {{
+            color: var(--text-muted);
+            font-size: 0.75rem;
+            min-width: 100px;
+        }}
+
+        .ticker-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 48px;
+        }}
+
+        .ticker-card {{
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 32px 24px;
+            text-align: center;
+            text-decoration: none;
+            transition: all 0.3s;
+        }}
+
+        .ticker-card:hover {{
+            border-color: var(--accent-blue);
+            background: var(--bg-card-hover);
+            transform: translateY(-4px);
+        }}
+
+        .ticker-card-symbol {{
+            font-size: 1.5rem;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }}
+
+        .ticker-card-label {{
+            font-size: 0.85rem;
+            color: var(--text-muted);
+        }}
+
+        footer {{
+            text-align: center;
+            padding: 40px 0;
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            border-top: 1px solid var(--border);
+            margin-top: 40px;
+        }}
     </style>
 </head>
 <body>
+    <div class="bg-grid"></div>
+    <div class="bg-glow"></div>
+
     <div class="container">
         <header>
-            <div class="logo">
-                <div class="logo-icon">S</div>
-                <div class="logo-text"><span>Stock</span>Rating</div>
+            <div class="header-inner">
+                <div class="logo">
+                    <div class="logo-icon">S</div>
+                    <div class="logo-text"><span>Stock</span>Rating</div>
+                </div>
             </div>
-            <p class="subtitle">Select a stock ticker to view comprehensive analysis</p>
         </header>
+
+        <div class="nav-bar">
+            <a href="/" class="nav-link active">Dashboard</a>
+            <a href="/dashboard?ticker=AAPL" class="nav-link">Analysis</a>
+            <a href="/compare?ticker=AAPL" class="nav-link">Compare</a>
+            <a href="/portfolio" class="nav-link">Portfolio</a>
+        </div>
+
+        <div class="page-header">
+            <h1 class="page-title">Market Overview</h1>
+            <p class="page-subtitle">Aggregated ratings across all data providers</p>
+        </div>
+
+        {config_bar}
+
+        {charts_section}
+
         <div class="ticker-grid">
             {tickers}
         </div>
+
         <footer>
-            <p>StockRating Dashboard v2.0 • Multi-Provider • Not financial advice</p>
+            <p>StockRating Dashboard v3.0 • Multi-Provider Aggregation • Not financial advice</p>
         </footer>
     </div>
 </body>
 </html>"#,
+        config_bar = if has_charts { format!(r#"<div class="config-bar">
+                <span class="config-label">Metrics:</span>
+                <select class="config-select" id="metrics-select" onchange="window.location.href='/?metrics='+this.value">
+                    <option value="pe,roe,revenue_growth,upside" selected>All Metrics</option>
+                    <option value="pe">P/E Only</option>
+                    <option value="roe">ROE Only</option>
+                    <option value="revenue_growth">Growth Only</option>
+                    <option value="upside">Upside Only</option>
+                </select>
+                <span class="config-label">Chart:</span>
+                <select class="config-select" id="chart-select" onchange="window.location.href='/?metrics='+document.getElementById('metrics-select').value+'&chart_type='+this.value">
+                    <option value="bar">Bar Chart</option>
+                    <option value="horizontal">Horizontal</option>
+                </select>
+                <a href="/api/all-stocks" class="config-btn" target="_blank">API</a>
+                <a href="/api/all-tickers" class="config-btn" target="_blank">Tickers API</a>
+            </div>"#) } else { String::new() },
+        charts_section = if has_charts { format!(r#"<div class="charts-container">
+                {charts_html}
+            </div>"#, charts_html = charts_html) } else { String::new() },
         tickers = ticker_cards,
     )
 }
@@ -1158,15 +1600,25 @@ pub fn setup_router(providers: Vec<Box<dyn StockDataProvider + Send + Sync>>) ->
         .route("/compare", get(compare_handler))
         .route("/portfolio", get(portfolio_handler))
         .route("/api/query", get(api_query_handler))
+        .route("/api/all-stocks", get(all_stocks_handler))
+        .route("/api/all-tickers", get(all_tickers_handler))
+        .route("/api/chart", get(chart_api_handler))
         .with_state(state)
 }
 
-async fn index_handler() -> Html<String> {
+pub(crate) async fn index_handler(
+    State(state): State<AppState>,
+) -> Html<String> {
+    let service = StockAggregationService::new(state.providers.clone());
+    let config = StockAggregationService::default_config();
+    let data = service.get_aggregated_data(&config);
+
     let tickers: Vec<String> = vec![
         "AAPL".to_string(), "MSFT".to_string(), "GOOGL".to_string(), "TSLA".to_string(),
         "AMZN".to_string(), "NVDA".to_string(), "META".to_string(), "AMD".to_string(),
     ];
-    Html(html_index(&tickers))
+
+    Html(html_index(&data.chart_groups, &tickers))
 }
 
 async fn dashboard_handler(
@@ -1543,4 +1995,113 @@ async fn portfolio_handler(
             String::new()
         },
     ))
+}
+
+pub(crate) async fn all_stocks_handler(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let service = StockAggregationService::new(state.providers.clone());
+    let config = StockAggregationService::default_config();
+    let data = service.get_aggregated_data(&config);
+
+    let mut chart_groups_json = Vec::new();
+    for group in &data.chart_groups {
+        let mut entries_json = Vec::new();
+        for entry in &group.entries {
+            entries_json.push(json!({
+                "ticker": entry.ticker,
+                "company_name": entry.company_name,
+                "provider": entry.provider,
+                "value": entry.value
+            }));
+        }
+        chart_groups_json.push(json!({
+            "metric": group.metric.label(),
+            "unit": group.unit,
+            "color": group.color,
+            "entries": entries_json
+        }));
+    }
+
+    Json(json!({
+        "tickers": data.tickers,
+        "providers": data.providers,
+        "chart_groups": chart_groups_json,
+        "metrics": config.metrics.iter().map(|m| m.label()).collect::<Vec<&str>>(),
+        "chart_type": format!("{:?}", config.chart_type),
+    }))
+}
+
+pub(crate) async fn all_tickers_handler(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let service = StockAggregationService::new(state.providers.clone());
+    let tickers = service.get_all_tickers();
+
+    let mut result = Vec::new();
+    for t in tickers {
+        result.push(json!({
+            "ticker": t.ticker,
+            "providers": t.providers,
+        }));
+    }
+
+    Json(json!({
+        "tickers": result,
+        "total": result.len(),
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct ConfigurableParams {
+    pub metrics: Option<String>,
+    pub providers: Option<String>,
+    pub chart_type: Option<String>,
+}
+
+async fn chart_api_handler(
+    State(state): State<AppState>,
+    Query(params): Query<ConfigurableParams>,
+) -> Json<serde_json::Value> {
+    let mut map = std::collections::HashMap::new();
+    if let Some(ref m) = params.metrics {
+        map.insert("metrics".to_string(), m.clone());
+    }
+    if let Some(ref p) = params.providers {
+        map.insert("providers".to_string(), p.clone());
+    }
+    if let Some(ref c) = params.chart_type {
+        map.insert("chart_type".to_string(), c.clone());
+    }
+
+    let service = StockAggregationService::new(state.providers.clone());
+    let config = StockAggregationService::parse_query_params(&map);
+    let data = service.get_aggregated_data(&config);
+
+    let mut chart_groups_json = Vec::new();
+    for group in &data.chart_groups {
+        let mut entries_json = Vec::new();
+        for entry in &group.entries {
+            entries_json.push(json!({
+                "ticker": entry.ticker,
+                "company_name": entry.company_name,
+                "provider": entry.provider,
+                "value": entry.value
+            }));
+        }
+        chart_groups_json.push(json!({
+            "metric": group.metric.label(),
+            "unit": group.unit,
+            "color": group.color,
+            "entries": entries_json
+        }));
+    }
+
+    Json(json!({
+        "tickers": data.tickers,
+        "providers": data.providers,
+        "chart_groups": chart_groups_json,
+        "metrics": config.metrics.iter().map(|m| m.label()).collect::<Vec<&str>>(),
+        "chart_type": format!("{:?}", config.chart_type),
+    }))
 }

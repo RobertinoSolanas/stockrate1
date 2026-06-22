@@ -2,6 +2,7 @@ mod credentials;
 mod models;
 mod providers;
 mod routes;
+mod services;
 mod tests;
 
 use providers::mock::MockDataProvider;
