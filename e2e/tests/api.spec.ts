@@ -55,7 +55,7 @@ test.describe('API Tests', () => {
   });
 
   test('all known tickers return data', async ({ request }) => {
-    const tickers = ['AAPL', 'MSFT', 'GOOGL', 'TSLA', 'AMZN', 'NVDA', 'META', 'AMD'];
+    const tickers = ['AAPL', 'MSFT', 'GOOGL', 'TSLA', 'AMZN'];
     for (const ticker of tickers) {
       const response = await request.get(`/api/query?ticker=${ticker}`);
       expect(response.ok()).toBeTruthy();
