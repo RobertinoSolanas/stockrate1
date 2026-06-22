@@ -6,13 +6,23 @@ mod services;
 #[cfg(test)]
 mod tests;
 
+use clap::Parser;
 use providers::mock::MockDataProvider;
 use providers::second_mock::SecondMockDataProvider;
 use providers::finnhub::FinnhubDataProvider;
 use providers::StockDataProvider;
 
+#[derive(Parser)]
+#[command(name = "stockrate", about = "StockRating Dashboard Server")]
+struct Cli {
+    /// Suppress startup info messages
+    #[arg(long)]
+    release: bool,
+}
+
 #[tokio::main]
 async fn main() {
+    let cli = Cli::parse();
     let mut providers: Vec<Box<dyn StockDataProvider + Send + Sync>> = vec![
         Box::new(MockDataProvider::new()),
         Box::new(SecondMockDataProvider::new()),
@@ -44,11 +54,13 @@ async fn main() {
     let app = routes::setup_router(providers);
 
     let addr = "0.0.0.0:3000";
-    println!("StockRating Dashboard running at http://{}", addr);
-    println!("Available providers: {}", if has_finnhub { "MockDataProvider, SecondMockProvider, FinnhubDataProvider" } else { "MockDataProvider, SecondMockProvider" });
-    println!("Available tickers: AAPL, MSFT, GOOGL, TSLA, AMZN, NVDA, META, AMD");
-    println!("API endpoint: http://localhost:3000/api/query?ticker=AAPL");
-    println!("Comparison: http://localhost:3000/compare?ticker=AAPL");
+    if !cli.release {
+        println!("StockRating Dashboard running at http://{}", addr);
+        println!("Available providers: {}", if has_finnhub { "MockDataProvider, SecondMockProvider, FinnhubDataProvider" } else { "MockDataProvider, SecondMockProvider" });
+        println!("Available tickers: AAPL, MSFT, GOOGL, TSLA, AMZN, NVDA, META, AMD");
+        println!("API endpoint: http://localhost:3000/api/query?ticker=AAPL");
+        println!("Comparison: http://localhost:3000/compare?ticker=AAPL");
+    }
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await
