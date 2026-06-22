@@ -25,7 +25,7 @@ test.describe('UI Tests', () => {
   test('dashboard page renders AAPL data', async ({ page }) => {
     await page.goto('/dashboard?ticker=AAPL');
     await expect(page.locator('text=AAPL')).toBeVisible();
-    await expect(page.locator('text=StockRating')).toBeVisible();
+    await expect(page.getByText('StockRating', { exact: true })).toBeVisible();
   });
 
   test('dashboard shows recommendation', async ({ page }) => {
@@ -42,12 +42,12 @@ test.describe('UI Tests', () => {
 
   test('dashboard shows financial health', async ({ page }) => {
     await page.goto('/dashboard?ticker=AAPL');
-    await expect(page.locator('text=Financial Health')).toBeVisible();
+    await expect(page.locator('.card-title').filter({ hasText: 'Financial Health' })).toBeVisible();
   });
 
   test('dashboard shows growth metrics', async ({ page }) => {
     await page.goto('/dashboard?ticker=AAPL');
-    await expect(page.locator('text=Growth Metrics')).toBeVisible();
+    await expect(page.locator('.card-title').filter({ hasText: 'Growth Metrics' })).toBeVisible();
   });
 
   test('dashboard shows SVG charts', async ({ page }) => {
