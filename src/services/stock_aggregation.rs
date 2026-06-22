@@ -111,6 +111,7 @@ impl ChartType {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct StockChartData {
     pub ticker: String,
     pub company_name: String,
@@ -119,6 +120,7 @@ pub struct StockChartData {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct MetricValue {
     pub name: String,
     pub value: f64,
@@ -148,6 +150,7 @@ pub struct AggregatedStockData {
     pub tickers: Vec<String>,
     pub providers: Vec<String>,
     pub chart_groups: Vec<ChartGroup>,
+    #[allow(dead_code)]
     pub raw_data: Vec<StockChartData>,
 }
 
@@ -275,6 +278,7 @@ impl StockAggregationService {
         result
     }
 
+    #[allow(dead_code)]
     pub fn get_all_stock_data(&self) -> Vec<(String, String, StockRatingData)> {
         let providers = self.providers.read().unwrap();
         let mut result: Vec<(String, String, StockRatingData)> = Vec::new();

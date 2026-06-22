@@ -1,6 +1,7 @@
 use crate::providers::finnhub::FinnhubDataProvider;
 use crate::providers::StockDataProvider;
 
+#[allow(dead_code)]
 fn finnhub_api_key() -> String {
     let cred_path = "resources/credentials.txt";
     let content = std::fs::read_to_string(cred_path).unwrap_or_default();

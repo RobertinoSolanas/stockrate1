@@ -5,7 +5,7 @@ use axum::{
     routing::get,
     Router,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::json;
 
 use crate::models::{Recommendation, StockRatingData};
@@ -1083,6 +1083,7 @@ pub fn html_compare(data_a: &StockRatingData, data_b: &StockRatingData) -> Strin
     )
 }
 
+#[allow(dead_code)]
 pub fn create_all_stocks_svg_chart(chart_groups: &Vec<ChartGroup>, _tickers: &[String]) -> String {
     if chart_groups.is_empty() {
         return String::new();

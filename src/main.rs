@@ -3,6 +3,7 @@ mod models;
 mod providers;
 mod routes;
 mod services;
+#[cfg(test)]
 mod tests;
 
 use providers::mock::MockDataProvider;

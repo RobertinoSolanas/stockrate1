@@ -30,6 +30,7 @@ impl Credentials {
         self.map.get(key).cloned()
     }
 
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
