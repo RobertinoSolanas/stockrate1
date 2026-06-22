@@ -9,3 +9,8 @@ Ends: `GET /` index, `GET /dashboard?ticker=XYZ` HTML dashboard, `GET /api/query
 Models in `src/models.rs` mirror the YAML schema: StockRatingData, ValuationRatios, FinancialHealth, GrowthMetrics, MarketSentiment.
 MockDataProvider ships with AAPL/MSFT/GOOGL/TSLA/AMZN sample data for offline development.
 Dependencies: axum 0.7, serde, tokio, chrono — all async with RwLock for thread-safe state.
+Testing: `cargo test` — unit tests cover models, providers, aggregation, credentials, helpers (160 passed).
+Integration UI tests use `axum-test` with an in-memory server to hit `/`, `/dashboard`, `/api/query`, `/api/all-stocks`, `/api/all-tickers`, and `/portfolio`.
+Mock providers supply AAPL/MSFT/GOOGL/TSLA/AMZN data so all tests run offline with no API keys.
+Live Finnhub tests are marked `#[ignore]` and require valid credentials in `resources/credentials.txt`.
+Run UI tests selectively: `cargo test test_dashboard` or `cargo test test_api`.
