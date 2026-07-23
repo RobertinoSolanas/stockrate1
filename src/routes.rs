@@ -17,24 +17,16 @@ pub struct AppState {
     pub providers: std::sync::Arc<std::sync::RwLock<Vec<Box<dyn StockDataProvider + Send + Sync>>>>,
 }
 
-#[derive(Deserialize)]
-struct QueryParams {
-    #[serde(rename = "ticker")]
-    ticker: String,
-    #[serde(rename = "provider")]
-    provider: Option<String>,
+fn extract_provider_from_params(params: &std::collections::HashMap<String, String>) -> &'static str {
+    match params.get("provider").map(|s| s.as_str()) {
+        Some("second") => "SecondMockProvider",
+        Some("finnhub") => "FinnhubDataProvider",
+        _ => "MockDataProvider",
+    }
 }
 
-#[derive(Deserialize)]
-struct CompareParams {
-    #[serde(rename = "ticker")]
-    ticker: String,
-}
-
-#[derive(Deserialize)]
-struct PortfolioQueryParams {
-    #[serde(rename = "provider")]
-    provider: Option<String>,
+fn extract_ticker_from_params(params: &std::collections::HashMap<String, String>) -> String {
+    params.get("ticker").cloned().unwrap_or_default().to_uppercase()
 }
 
 pub fn format_recommendation(rec: &Recommendation) -> String {
@@ -1614,27 +1606,19 @@ pub(crate) async fn index_handler(
     let config = StockAggregationService::default_config();
     let data = service.get_aggregated_data(&config);
 
-    let tickers: Vec<String> = vec![
-        "AAPL".to_string(), "MSFT".to_string(), "GOOGL".to_string(), "TSLA".to_string(),
-        "AMZN".to_string(), "NVDA".to_string(), "META".to_string(), "AMD".to_string(),
-    ];
-
-    Html(html_index(&data.chart_groups, &tickers))
+    Html(html_index(&data.chart_groups, &data.tickers))
 }
 
 async fn dashboard_handler(
     State(state): State<AppState>,
-    Query(params): Query<QueryParams>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Html<String> {
-    let ticker = params.ticker.to_uppercase();
-    let provider_name = params.provider.as_deref().unwrap_or("mock");
+    let ticker = extract_ticker_from_params(&params);
+    let provider_name = extract_provider_from_params(&params);
     let providers = state.providers.read().unwrap();
-    
-    let data_provider = match provider_name {
-        "second" => providers.iter().find(|p| p.provider_name() == "SecondMockDataProvider"),
-        "finnhub" => providers.iter().find(|p| p.provider_name() == "FinnhubDataProvider"),
-        _ => providers.iter().find(|p| p.provider_name() == "MockDataProvider"),
-    };
+
+    let data_provider = providers.iter()
+        .find(|p| p.provider_name() == provider_name);
 
     let result = match data_provider {
         Some(dp) => {
@@ -1658,20 +1642,20 @@ async fn dashboard_handler(
 
 async fn compare_handler(
     State(state): State<AppState>,
-    Query(params): Query<CompareParams>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Html<String> {
-    let ticker = params.ticker.to_uppercase();
+    let ticker = extract_ticker_from_params(&params);
     let providers = state.providers.read().unwrap();
-    
-    let mock_data = providers.iter().find(|p| p.provider_name() == "MockDataProvider")
-        .map(|p| (**p).get_stock_data(&ticker))
-        .flatten();
-    let second_data = providers.iter().find(|p| p.provider_name() == "SecondMockDataProvider")
-        .map(|p| (**p).get_stock_data(&ticker))
-        .flatten();
-    let finnhub_data = providers.iter().find(|p| p.provider_name() == "FinnhubDataProvider")
-        .map(|p| (**p).get_stock_data(&ticker))
-        .flatten();
+
+    let mock_data = providers.iter()
+        .find(|p| p.provider_name() == "MockDataProvider")
+        .and_then(|p| (**p).get_stock_data(&ticker));
+    let second_data = providers.iter()
+        .find(|p| p.provider_name() == "SecondMockProvider")
+        .and_then(|p| (**p).get_stock_data(&ticker));
+    let finnhub_data = providers.iter()
+        .find(|p| p.provider_name() == "FinnhubDataProvider")
+        .and_then(|p| (**p).get_stock_data(&ticker));
 
     // Prefer MockDataProvider vs FinnhubDataProvider if Finnhub available, otherwise Mock vs Second
     if let (Some(a), Some(b)) = (mock_data.clone(), finnhub_data) {
@@ -1688,19 +1672,13 @@ async fn compare_handler(
 
 async fn api_query_handler(
     State(state): State<AppState>,
-    Query(params): Query<QueryParams>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<StockRatingData>, (StatusCode, String)> {
-    let ticker = params.ticker;
-    let provider_name = params.provider.as_deref().unwrap_or("mock");
+    let ticker = extract_ticker_from_params(&params);
+    let provider_name = extract_provider_from_params(&params);
     let providers = state.providers.read().unwrap();
-    
-    let data_provider = match provider_name {
-        "second" => providers.iter().find(|p| p.provider_name() == "SecondMockDataProvider"),
-        "finnhub" => providers.iter().find(|p| p.provider_name() == "FinnhubDataProvider"),
-        _ => providers.iter().find(|p| p.provider_name() == "MockDataProvider"),
-    };
 
-    match data_provider {
+    match providers.iter().find(|p| p.provider_name() == provider_name) {
         Some(dp) => match (**dp).get_stock_data(&ticker) {
             Some(data) => Ok(Json(data)),
             None => Err((StatusCode::NOT_FOUND, format!("Ticker '{}' not found", ticker))),
@@ -1711,29 +1689,23 @@ async fn api_query_handler(
 
 async fn portfolio_handler(
     State(state): State<AppState>,
-    Query(params): Query<PortfolioQueryParams>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Html<String> {
+    let service = StockAggregationService::new(state.providers.clone());
+    let config = StockAggregationService::default_config();
+    let aggregated = service.get_aggregated_data(&config);
     let providers = state.providers.read().unwrap();
-    let all_tickers: Vec<String> = vec![
-        "AAPL".to_string(), "MSFT".to_string(), "GOOGL".to_string(), "TSLA".to_string(),
-        "AMZN".to_string(), "NVDA".to_string(), "META".to_string(), "AMD".to_string(),
-    ];
-    
-    let selected_provider = params.provider.as_deref().unwrap_or("mock");
-    
-    let provider_name_filter = match selected_provider {
-        "second" => "SecondMockDataProvider",
-        "finnhub" => "FinnhubDataProvider",
-        _ => "MockDataProvider",
-    };
-    
+
+    let provider_name_filter = extract_provider_from_params(&params);
+    let all_tickers = aggregated.tickers;
+
     let active_provider_name = providers.iter()
         .find(|p| p.provider_name() == provider_name_filter)
         .map(|p| p.provider_name())
         .unwrap_or("MockDataProvider");
-    
+
     let mut stock_records: Vec<(String, StockRatingData)> = Vec::new();
-    
+
     if let Some(provider) = providers.iter().find(|p| p.provider_name() == provider_name_filter) {
         for ticker in &all_tickers {
             if let Some(data) = provider.get_stock_data(ticker) {
@@ -1812,7 +1784,7 @@ async fn portfolio_handler(
     };
     
     let mock_active = provider_btn_active("MockDataProvider", active_provider_name);
-    let second_active = provider_btn_active("SecondMockDataProvider", active_provider_name);
+    let second_active = provider_btn_active("SecondMockProvider", active_provider_name);
     let finnhub_active = provider_btn_active("FinnhubDataProvider", active_provider_name);
     
     let has_finnhub = providers.iter().any(|p| p.provider_name() == "FinnhubDataProvider");
