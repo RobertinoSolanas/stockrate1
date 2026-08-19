@@ -209,6 +209,153 @@ pub(crate) fn map_screener_rows(rows: Vec<FinnhubScreenerRow>) -> Vec<String> {
         .collect()
 }
 
+// ---------------------------------------------------------------------------
+// Fuzzy search helpers (pure functions, unit-tested)
+// ---------------------------------------------------------------------------
+
+/// Lowercase a query and split it into alphanumeric words (length >= 2),
+/// dropping generic company suffixes ("Apple Inc." -> ["apple"]).
+pub(crate) fn tokenize_search_query(query: &str) -> Vec<String> {
+    query
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| t.len() >= 2 && !SEARCH_STOPWORDS.contains(t))
+        .map(|t| t.to_string())
+        .collect()
+}
+
+/// Classic Levenshtein edit distance (two-row dynamic programming).
+pub(crate) fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    if a.is_empty() {
+        return b.len();
+    }
+    if b.is_empty() {
+        return a.len();
+    }
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0usize; b.len() + 1];
+    for i in 1..=a.len() {
+        cur[0] = i;
+        for j in 1..=b.len() {
+            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+            cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
+}
+
+/// True when every char of `needle` appears in `hay` in order.
+pub(crate) fn is_subsequence(needle: &str, hay: &str) -> bool {
+    let mut it = hay.chars();
+    needle.chars().all(|n| it.any(|c| c == n))
+}
+
+/// Look up a nickname/legacy name: exact match or 4+ char prefix in either
+/// direction ("goog" -> google -> GOOGL).
+pub(crate) fn alias_lookup(word: &str) -> Option<(&'static str, &'static str)> {
+    ALIASES.iter()
+        .find(|(alias, _, _)| {
+            let a = *alias;
+            word == a
+                || (word.len() >= 4 && a.starts_with(word))
+                || (a.len() >= 4 && word.starts_with(a))
+        })
+        .map(|(_, sym, name)| (*sym, *name))
+}
+
+/// Fuzzy-match one query word against a ticker symbol.
+pub(crate) fn score_symbol(word: &str, symbol: &str) -> u32 {
+    let s = symbol.to_lowercase();
+    if word == s {
+        return 90;
+    }
+    if word.len() >= 3 && s.starts_with(word) {
+        return 75;
+    }
+    let d = levenshtein(word, &s);
+    // lev-1 needs 4+ chars on both sides: on 3-char symbols one substitution
+    // means a third of the symbol differs ("ibm" ~ IRM) — too noisy.
+    if d == 1 && word.len() >= 4 && s.len() >= 4 {
+        return 70;
+    }
+    // lev-2 is only trusted for longer strings: on 4-char symbols it would
+    // match roughly half of the whole universe ("aapl" ~ PYPL/BALL/...).
+    if d == 2 && word.len() >= 5 && s.len() >= 5 {
+        return 55;
+    }
+    // The symbol is just the (short) start of a longer word: weak signal.
+    if s.len() >= 3 && s.len() < word.len() && word.starts_with(&s) {
+        return 45;
+    }
+    // Subsequence in either direction ("nvdia" ~ NVDA).
+    if s.len() >= 3 && word.len() >= 3 && is_subsequence(&s, word) {
+        return 40;
+    }
+    if s.len() >= 4 && word.len() >= 3 && is_subsequence(word, &s) {
+        return 40;
+    }
+    0
+}
+
+/// Fuzzy-match all query words against a symbol + company name.
+/// Returns (score, number_of_query_words_matched) — the match count is used
+/// as a tie-breaker so "Bank of America" (2 words matched) outranks
+/// "Wilson Bank Holding" (1 word) at equal score.
+pub(crate) fn score_candidate(symbol: &str, description: &str, words: &[String]) -> (u32, u32) {
+    let name_tokens: Vec<String> = description
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| t.len() >= 3 && !SEARCH_STOPWORDS.contains(t))
+        .map(|t| t.to_string())
+        .collect();
+
+    let mut best: u32 = 0;
+    let mut matched: u32 = 0;
+    for w in words {
+        let sym_score = score_symbol(w, symbol);
+        if sym_score >= SEARCH_MIN_SCORE {
+            matched += 1;
+        }
+        best = best.max(sym_score);
+        // "Apple Inc" -> single meaningful token equal to the word: the user
+        // almost certainly meant this exact company. (5+ chars: short generic
+        // tokens like "bank" would otherwise boost "M&T Bank" over BAC.)
+        if name_tokens.len() == 1 && name_tokens[0] == *w && w.len() >= 5 {
+            matched += 1;
+            best = best.max(95);
+        }
+        let mut word_matched_name = false;
+        for t in &name_tokens {
+            if w == t {
+                word_matched_name = true;
+                best = best.max(85);
+            } else if w.len() >= 3 && t.starts_with(w) {
+                word_matched_name = true;
+                best = best.max(70);
+            } else if t.len() >= 3 && w.starts_with(t) {
+                word_matched_name = true;
+                best = best.max(50);
+            } else {
+                let d = levenshtein(w, t);
+                if d == 1 && t.len() >= 3 {
+                    word_matched_name = true;
+                    best = best.max(60);
+                } else if d == 2 && t.len() >= 5 && w.len() >= 5 {
+                    word_matched_name = true;
+                    best = best.max(50);
+                }
+            }
+        }
+        if word_matched_name && sym_score < SEARCH_MIN_SCORE {
+            matched += 1;
+        }
+    }
+    (best, matched)
+}
+
 #[derive(Debug, Deserialize)]
 struct FinnhubRecommendation {
     #[serde(rename = "strongBuy")]
@@ -227,11 +374,76 @@ struct FinnhubRecommendation {
 /// from the screener endpoint (the universe of listed symbols barely moves).
 const TICKER_LIST_TTL: Duration = Duration::from_secs(3600);
 
+/// How long a search response is cached (protects the free-tier rate limit
+/// against rapid typing).
+const SEARCH_TTL: Duration = Duration::from_secs(120);
+
+/// Minimum score for a candidate to be returned by the fuzzy search.
+const SEARCH_MIN_SCORE: u32 = 40;
+
+/// Generic company suffixes dropped from search queries ("Apple Inc." -> [apple]).
+const SEARCH_STOPWORDS: &[&str] = &[
+    "inc", "corp", "co", "ltd", "group", "groups", "holdings", "holding", "plc",
+    "technologies", "technology", "tech", "systems", "system", "international",
+    "companies", "company", "class", "the", "and",
+];
+
+/// Common nicknames / legacy names -> (ticker, display name).
+/// Lets users find rebranded companies ("google" -> GOOGL/Alphabet) and
+/// well-known companies by their plain name even when the live search API
+/// only knows the formal registration name.
+const ALIASES: &[(&str, &str, &str)] = &[
+    ("google", "GOOGL", "Alphabet Inc (Google)"),
+    ("alphabet", "GOOGL", "Alphabet Inc"),
+    ("facebook", "META", "Meta Platforms Inc"),
+    ("meta", "META", "Meta Platforms Inc"),
+    ("apple", "AAPL", "Apple Inc"),
+    ("microsoft", "MSFT", "Microsoft Corp"),
+    ("amazon", "AMZN", "Amazon.com Inc"),
+    ("tesla", "TSLA", "Tesla Inc"),
+    ("nvidia", "NVDA", "NVIDIA Corp"),
+    ("intel", "INTC", "Intel Corp"),
+    ("netflix", "NFLX", "Netflix Inc"),
+    ("disney", "DIS", "Walt Disney Co"),
+    ("cisco", "CSCO", "Cisco Systems Inc"),
+    ("oracle", "ORCL", "Oracle Corp"),
+    ("adobe", "ADBE", "Adobe Inc"),
+    ("airbnb", "ABNB", "Airbnb Inc"),
+    ("spotify", "SPOT", "Spotify Technology SA"),
+    ("palantir", "PLTR", "Palantir Technologies Inc"),
+    ("coinbase", "COIN", "Coinbase Global Inc"),
+    ("nike", "NKE", "Nike Inc"),
+    ("starbucks", "SBUX", "Starbucks Corp"),
+    ("walmart", "WMT", "Walmart Inc"),
+    ("costco", "COST", "Costco Wholesale Corp"),
+    ("berkshire", "BRK.B", "Berkshire Hathaway Inc"),
+    ("goldman", "GS", "Goldman Sachs Group Inc"),
+    ("jpmorgan", "JPM", "JPMorgan Chase & Co"),
+    ("america", "BAC", "Bank of America Corp"),
+    ("chase", "JPM", "JPMorgan Chase & Co"),
+    ("visa", "V", "Visa Inc"),
+    ("mastercard", "MA", "Mastercard Inc"),
+    ("intuit", "INTU", "Intuit Inc"),
+    ("salesforce", "CRM", "Salesforce Inc"),
+    ("coca", "KO", "Coca-Cola Co"),
+    ("pepsi", "PEP", "PepsiCo Inc"),
+    ("boeing", "BA", "Boeing Co"),
+    ("chevron", "CVX", "Chevron Corp"),
+    ("exxon", "XOM", "Exxon Mobil Corp"),
+    ("depot", "HD", "Home Depot Inc"),
+    ("stanley", "MS", "Morgan Stanley"),
+    ("paypal", "PYPL", "PayPal Inc"),
+    ("amd", "AMD", "Advanced Micro Devices Inc"),
+    ("qualcomm", "QCOM", "Qualcomm Inc"),
+    ("verizon", "VZ", "Verizon Communications Inc"),
+];
+
 pub struct FinnhubDataProvider {
     api_key: String,
     #[allow(dead_code)]
     client: reqwest::Client,
     ticker_list_cache: std::sync::Mutex<Option<(Instant, Vec<String>)>>,
+    search_cache: std::sync::Mutex<std::collections::HashMap<String, (Instant, Vec<StockSearchResult>)>>,
 }
 
 impl FinnhubDataProvider {
@@ -240,6 +452,7 @@ impl FinnhubDataProvider {
             api_key,
             client: reqwest::Client::new(),
             ticker_list_cache: std::sync::Mutex::new(None),
+            search_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -257,31 +470,129 @@ impl FinnhubDataProvider {
         serde_json::from_str(&body).map_err(|e| format!("JSON parse error: {}", e))
     }
 
-    /// Free-text symbol search against Finnhub's `/search` endpoint
-    /// (US exchange). Returns up to 20 results, stock entries preferred.
-    async fn search_symbols_inner(api_key: &str, query: &str) -> Option<Vec<StockSearchResult>> {
+    /// One Finnhub `/search` call (US exchange).
+    async fn fetch_search(api_key: &str, probe: &str) -> Option<Vec<FinnhubSearchEntry>> {
+        let url = format!(
+            "https://finnhub.io/api/v1/search?q={}&exchange=US&token={}",
+            url_encode(probe),
+            api_key
+        );
+        let resp: FinnhubSearchResponse = Self::fetch(api_key, &url).await.ok()?;
+        Some(resp.result)
+    }
+
+    /// Fuzzy free-text search.
+    ///
+    /// Methodology (layered, so typos and nicknames still resolve):
+    /// 1. Probe the Finnhub search API with the raw query; if that is thin,
+    ///    probe each word and, for words >= 5 chars, walk a prefix ladder
+    ///    ("infion" -> "infio" -> "infi") until the API returns anything.
+    /// 2. Add local candidates: the nickname alias map ("google" -> GOOGL)
+    ///    and Levenshtein/prefix/subsequence matches against the cached
+    ///    alphabetical ticker universe ("apal" -> AAPL).
+    /// 3. Score every candidate against the query words, deduplicate across
+    ///    exchanges (US listing preferred) and return the top 20.
+    async fn search_symbols_inner(
+        api_key: &str,
+        query: &str,
+        universe: &[String],
+    ) -> Option<Vec<StockSearchResult>> {
         let q = query.trim();
         if q.is_empty() {
             return Some(Vec::new());
         }
-        let url = format!(
-            "https://finnhub.io/api/v1/search?q={}&exchange=US&token={}",
-            url_encode(q),
-            api_key
-        );
-        let resp: FinnhubSearchResponse = Self::fetch(api_key, &url).await.ok()?;
-        let mut results = map_search_entries(resp.result);
-        // Prefer real stocks ("Common Stock"); if the API only returned
-        // funds/indices for this query, keep those instead of an empty list.
-        let stocks: Vec<StockSearchResult> = results
-            .iter()
-            .filter(|r| r.kind.as_deref().map(|k| k.to_lowercase().contains("stock")).unwrap_or(true))
-            .cloned()
-            .collect();
-        if !stocks.is_empty() {
-            results = stocks;
+        let words = tokenize_search_query(q);
+
+        // 1) API probes
+        let mut entries = Self::fetch_search(api_key, q).await.unwrap_or_default();
+        if entries.len() < 3 {
+            for w in words.iter().take(2) {
+                if entries.len() >= 8 {
+                    break;
+                }
+                // Prefix ladder: full word down to 4 chars, stop at first hit.
+                for l in (4..=w.len()).rev() {
+                    let probe = match w.get(..l) {
+                        Some(p) if p.chars().all(|c| c.is_ascii()) => p,
+                        _ => continue,
+                    };
+                    if l == w.len() && probe == q {
+                        continue; // already probed as raw query
+                    }
+                    let res = Self::fetch_search(api_key, probe).await.unwrap_or_default();
+                    if !res.is_empty() {
+                        entries.extend(res);
+                        break;
+                    }
+                }
+            }
         }
-        Some(results.into_iter().take(20).collect())
+        let mut pool = map_search_entries(entries);
+
+        // 2a) Alias map (nicknames / legacy company names)
+        for w in &words {
+            if let Some((sym, name)) = alias_lookup(w) {
+                if !pool.iter().any(|p| p.symbol == sym) {
+                    pool.push(StockSearchResult {
+                        symbol: sym.to_string(),
+                        description: name.to_string(),
+                        display: sym.to_string(),
+                        kind: Some("stock".to_string()),
+                    });
+                }
+            }
+        }
+
+        // 2b) Local fuzzy match of the words against the ticker universe
+        for w in &words {
+            if w.len() < 3 {
+                continue;
+            }
+            for sym in universe {
+                if pool.iter().any(|p| p.symbol == *sym) {
+                    continue;
+                }
+                if score_symbol(w, sym) >= SEARCH_MIN_SCORE {
+                    pool.push(StockSearchResult {
+                        symbol: sym.clone(),
+                        description: String::new(),
+                        display: sym.clone(),
+                        kind: None,
+                    });
+                }
+            }
+        }
+
+        // 3) Score, dedupe across exchanges (US listing preferred), rank.
+        //    Sort: score desc -> query words matched desc -> symbol asc.
+        let mut best: std::collections::HashMap<String, (u32, u32, StockSearchResult)> =
+            std::collections::HashMap::new();
+        for p in pool {
+            let (score, matched) = score_candidate(&p.symbol, &p.description, &words);
+            if score < SEARCH_MIN_SCORE {
+                continue;
+            }
+            let base = p.symbol.split('.').next().unwrap_or(&p.symbol).to_string();
+            let is_us = !p.symbol.contains('.');
+            match best.get(&base) {
+                // A US listing beats a foreign one for the same base symbol.
+                Some((_, _, existing)) if !is_us && !existing.symbol.contains('.') => {}
+                Some((existing_score, _, _)) if score < *existing_score => {}
+                _ => {
+                    best.insert(base, (score, matched, p));
+                }
+            }
+        }
+        let mut ranked: Vec<(u32, u32, &StockSearchResult)> = best
+            .values()
+            .map(|(s, m, p)| (*s, *m, p))
+            .collect();
+        ranked.sort_by(|a, b| {
+            b.0.cmp(&a.0)
+                .then_with(|| b.1.cmp(&a.1))
+                .then_with(|| a.2.symbol.cmp(&b.2.symbol))
+        });
+        Some(ranked.into_iter().take(20).map(|(_, _, p)| p.clone()).collect())
     }
 
     /// Fetch the full US ticker universe from the Finnhub screener endpoint.
@@ -333,21 +644,34 @@ impl FinnhubDataProvider {
         Self::sp500_tickers().await
     }
 
-    /// Synchronous free-text search (blocking; runs the HTTP call on a worker
-    /// thread, same pattern as `get_stock_data`).
+    /// Synchronous fuzzy free-text search (blocking; runs the HTTP calls on a
+    /// worker thread, same pattern as `get_stock_data`). Results are cached
+    /// per query for `SEARCH_TTL` to be gentle with the API rate limit.
     pub fn search(&self, query: &str) -> Vec<StockSearchResult> {
-        if query.trim().is_empty() {
+        let q = query.trim().to_string();
+        if q.is_empty() {
             return Vec::new();
         }
+        let key = q.to_lowercase();
+        if let Some((fetched_at, results)) = self.search_cache.lock().unwrap().get(&key).cloned() {
+            if fetched_at.elapsed() <= SEARCH_TTL {
+                return results;
+            }
+        }
         let api_key = self.api_key.clone();
-        let query = query.to_string();
-        std::thread::spawn(move || {
+        let universe = self.all_tickers();
+        let results = std::thread::spawn(move || {
             let rt = Self::new_runtime();
-            rt.block_on(Self::search_symbols_inner(&api_key, &query))
+            rt.block_on(Self::search_symbols_inner(&api_key, &q, &universe))
         })
         .join()
         .unwrap_or(None)
-        .unwrap_or_default()
+        .unwrap_or_default();
+        self.search_cache
+            .lock()
+            .unwrap()
+            .insert(key, (Instant::now(), results.clone()));
+        results
     }
 
     /// Alphabetical list of every available US ticker.
@@ -733,5 +1057,109 @@ mod tests {
     fn test_search_empty_query_short_circuits() {
         let provider = FinnhubDataProvider::new("whatever".into());
         assert!(provider.search("   ").is_empty());
+    }
+
+    #[test]
+    fn test_levenshtein_basics() {
+        assert_eq!(levenshtein("kitten", "sitting"), 3);
+        assert_eq!(levenshtein("infion", "infineon"), 2);
+        assert_eq!(levenshtein("abc", "abc"), 0);
+        assert_eq!(levenshtein("", "abc"), 3);
+    }
+
+    #[test]
+    fn test_is_subsequence() {
+        assert!(is_subsequence("nvda", "nvdia"));
+        assert!(is_subsequence("infi", "infion"));
+        assert!(!is_subsequence("abcd", "abxd"));
+    }
+
+    #[test]
+    fn test_tokenize_drops_stopwords() {
+        assert_eq!(tokenize_search_query("Apple Inc."), vec!["apple"]);
+        assert_eq!(
+            tokenize_search_query("Bank of America Corp"),
+            vec!["bank", "of", "america"]
+        );
+        assert_eq!(tokenize_search_query("Google Technologies, Inc."), vec!["google"]);
+    }
+
+    #[test]
+    fn test_alias_lookup_nickname_and_prefix() {
+        assert_eq!(alias_lookup("google"), Some(("GOOGL", "Alphabet Inc (Google)")));
+        assert_eq!(alias_lookup("goog"), Some(("GOOGL", "Alphabet Inc (Google)")));
+        assert_eq!(alias_lookup("facebook"), Some(("META", "Meta Platforms Inc")));
+        assert_eq!(alias_lookup("zzzz"), None);
+    }
+
+    #[test]
+    fn test_score_symbol_fuzzy_cases() {
+        assert_eq!(score_symbol("aapl", "AAPL"), 90);
+        // "apple" is the company name, not the symbol: no symbol-level match
+        // (the name itself scores 95 in score_candidate via the single-token
+        // exact rule for "Apple Inc").
+        assert_eq!(score_symbol("apple", "AAPL"), 0);
+        // lev-2 on 4-char symbols is too noisy ("aapl" ~ PYPL etc.) -> 0
+        assert_eq!(score_symbol("apal", "AAPL"), 0);
+        assert_eq!(score_symbol("aapls", "AAPL"), 70, "lev-1 typo (5 chars)");
+        // "aaplle" = full symbol as word prefix: weak-but-real signal.
+        assert!(score_symbol("aaplle", "AAPL") >= SEARCH_MIN_SCORE, "prefix of word");
+        assert_eq!(score_symbol("nvd", "NVDA"), 75, "prefix");
+        // "nvid" ~ NVDA: lev-2 on 4 chars is not trusted and no subsequence
+        // (no 'a' in "nvid"); the company NAME "NVIDIA" still matches it via
+        // score_candidate (token prefix -> 70).
+        assert_eq!(score_symbol("nvid", "NVDA"), 0);
+        assert_eq!(score_symbol("nvdia", "NVDA"), 70, "lev-1 typo");
+        assert_eq!(score_symbol("nvidiaa", "NVDA"), 40, "subsequence");
+        assert_eq!(score_symbol("zzzz", "AAPL"), 0);
+    }
+
+    #[test]
+    fn test_score_candidate_name_typo() {
+        // "infion" is a typo of Infineon: name-token lev-2 should score.
+        let (score, matched) = score_candidate("IFX.DE", "INFINEON TECHNOLOGIES AG", &["infion".into()]);
+        assert!(score >= SEARCH_MIN_SCORE, "got {}", score);
+        assert_eq!(matched, 1);
+        // Unrelated name scores nothing.
+        let (none, none_matched) = score_candidate("INFY", "INFOSYS LTD", &["infion".into()]);
+        assert!(none < SEARCH_MIN_SCORE, "got {}", none);
+        assert_eq!(none_matched, 0);
+        // Multi-word match count: BAC matches both "bank" and "america".
+        let (bac, bac_matched) = score_candidate("BAC", "BANK OF AMERICA CORP", &["bank".into(), "of".into(), "america".into()]);
+        assert_eq!(bac_matched, 2);
+        let (wbhc, wbhc_matched) = score_candidate("WBHC", "WILSON BANK HOLDING CO", &["bank".into(), "of".into(), "america".into()]);
+        assert_eq!(wbhc_matched, 1);
+        assert!(bac >= wbhc);
+    }
+
+    #[test]
+    fn test_search_google_resolves_offline_via_alias() {
+        // No network: Finnhub probes fail, but the alias map must still
+        // resolve the rebranded "google" -> GOOGL.
+        let provider = FinnhubDataProvider::new("invalid-key-for-offline-test".into());
+        let results = provider.search("google");
+        assert!(!results.is_empty());
+        assert_eq!(results[0].symbol, "GOOGL");
+        assert!(results[0].description.contains("Alphabet"));
+    }
+
+    #[test]
+    fn test_search_symbol_typo_resolves_offline_via_universe() {
+        // "aapls" is a typo of AAPL: matched against the ticker universe
+        // (curated fallback list contains AAPL, so this works offline).
+        let provider = FinnhubDataProvider::new("invalid-key-for-offline-test".into());
+        let results = provider.search("aapls");
+        assert!(results.iter().any(|r| r.symbol == "AAPL"));
+    }
+
+    #[test]
+    fn test_search_results_are_cached() {
+        let provider = FinnhubDataProvider::new("invalid-key-for-offline-test".into());
+        let first = provider.search("google");
+        let entries = provider.search_cache.lock().unwrap().len();
+        assert_eq!(entries, 1);
+        let second = provider.search("GOOGLE"); // case-insensitive cache key
+        assert_eq!(second, first);
+        assert_eq!(provider.search_cache.lock().unwrap().len(), 1);
     }
 }
