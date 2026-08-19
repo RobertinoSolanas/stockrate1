@@ -74,3 +74,31 @@ async fn test_dashboard_aapl() {
     // Mock provider may not have AAPL
     assert!(status == 200 || status == 404);
 }
+
+// Finnhub-specific endpoints report 503 when the provider is not configured
+// (the test server only wires up the mock providers).
+#[tokio::test]
+async fn test_api_finnhub_search_disabled_returns_503() {
+    let mut server = make_server().await;
+    // axum-test ignores query strings embedded in the path, so attach the
+    // parameter explicitly.
+    server.add_query_param("q", "aapl");
+    let response = server.get("/api/finnhub/search").await;
+    assert_eq!(response.status_code(), 503);
+}
+
+#[tokio::test]
+async fn test_api_finnhub_tickers_disabled_returns_503() {
+    let server = make_server().await;
+    let response = server.get("/api/finnhub/tickers").await;
+    assert_eq!(response.status_code(), 503);
+}
+
+#[tokio::test]
+async fn test_finnhub_page_disabled_shows_setup_hint() {
+    let server = make_server().await;
+    let response = server.get("/finnhub").await;
+    assert_eq!(response.status_code(), 200);
+    let body = response.text();
+    assert!(body.contains("Finnhub not configured"));
+}

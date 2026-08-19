@@ -47,6 +47,16 @@ test.describe('API Tests', () => {
     expect(body.total).toBeGreaterThanOrEqual(8);
   });
 
+  test('/api/finnhub/search returns 503 when Finnhub is disabled', async ({ request }) => {
+    const response = await request.get('/api/finnhub/search?q=aapl');
+    expect(response.status()).toBe(503);
+  });
+
+  test('/api/finnhub/tickers returns 503 when Finnhub is disabled', async ({ request }) => {
+    const response = await request.get('/api/finnhub/tickers');
+    expect(response.status()).toBe(503);
+  });
+
   test('/api/chart returns chart data', async ({ request }) => {
     const response = await request.get('/api/chart?metrics=pe,roe&chart_type=bar');
     expect(response.ok()).toBeTruthy();

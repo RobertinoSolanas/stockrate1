@@ -6,6 +6,8 @@ Providers implement `StockDataProvider` trait (mock, yahoo, alphavantage, etc.) 
 Data flows: provider → serde-deserialized models → routes render HTML/JSON responses.
 Run: `cargo run` then open http://localhost:3000 (dashboard) or http://localhost:3000/api/query?ticker=AAPL (JSON API).
 Ends: `GET /` index, `GET /dashboard?ticker=XYZ` HTML dashboard, `GET /api/query?ticker=XYZ` JSON endpoint.
+The Finnhub page (`/finnhub`) supports live symbol search by company name or ticker (`GET /api/finnhub/search?q=apple`) and an alphabetical browser of the full stock universe (`GET /api/finnhub/tickers`).
+Ticker universe methodology: Finnhub `/stock/screener` (paid plans) → keyless S&P 500 constituents CSV fallback → curated in-app list; results are deduplicated, alphabetized and cached in-process for one hour.
 Models in `src/models.rs` mirror the YAML schema: StockRatingData, ValuationRatios, FinancialHealth, GrowthMetrics, MarketSentiment.
 MockDataProvider ships with AAPL/MSFT/GOOGL/TSLA/AMZN sample data for offline development.
 Dependencies: axum 0.7, serde, tokio, chrono — all async with RwLock for thread-safe state.

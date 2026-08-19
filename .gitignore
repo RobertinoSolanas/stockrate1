@@ -35,3 +35,6 @@ msplaywright/
 
 # pi agent local settings
 .pi/
+
+# pi agent session exports
+pi-session-*.html

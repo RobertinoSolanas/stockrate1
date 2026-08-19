@@ -137,6 +137,16 @@ impl StockDataProvider for CachedProvider {
         self.inner.list_supported_tickers()
     }
 
+    // Search / universe listing are delegated straight through to the inner
+    // provider (the Finnhub provider keeps its own TTL cache for these).
+    fn search_symbols(&self, query: &str) -> Vec<crate::models::StockSearchResult> {
+        self.inner.search_symbols(query)
+    }
+
+    fn list_all_tickers(&self) -> Vec<String> {
+        self.inner.list_all_tickers()
+    }
+
     fn provider_name(&self) -> &'static str {
         self.inner.provider_name()
     }

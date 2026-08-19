@@ -729,3 +729,41 @@ mod helper_function_tests {
         assert!(svg.contains("#f59e0b"));
     }
 }
+
+// ============================================================
+// Search / Ticker Universe Support Tests
+// ============================================================
+
+mod search_support_tests {
+    use crate::models::StockSearchResult;
+    use crate::providers::mock::MockDataProvider;
+    use crate::providers::StockDataProvider;
+
+    #[test]
+    fn test_stock_search_result_serialization_roundtrip() {
+        let r = StockSearchResult {
+            symbol: "AAPL".into(),
+            description: "Apple Inc.".into(),
+            display: "AAPL:US".into(),
+            kind: Some("stock".into()),
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(json.contains("\"symbol\":\"AAPL\""));
+        assert!(json.contains("\"type\":\"stock\""));
+        let back: StockSearchResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.symbol, "AAPL");
+        assert_eq!(back.display, "AAPL:US");
+    }
+
+    #[test]
+    fn test_default_search_symbols_is_empty() {
+        let provider = MockDataProvider::new();
+        assert!(provider.search_symbols("aapl").is_empty());
+    }
+
+    #[test]
+    fn test_default_list_all_tickers_matches_supported() {
+        let provider = MockDataProvider::new();
+        assert_eq!(provider.list_all_tickers(), provider.list_supported_tickers());
+    }
+}

@@ -4,6 +4,7 @@ use crate::providers::StockDataProvider;
 use reqwest;
 use serde::Deserialize;
 use serde_json;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
@@ -116,6 +117,99 @@ struct FinnhubMetrics {
 }
 
 #[derive(Debug, Deserialize)]
+struct FinnhubSearchResponse {
+    #[serde(default)]
+    #[allow(dead_code)]
+    count: Option<usize>,
+    #[serde(default)]
+    result: Vec<FinnhubSearchEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct FinnhubSearchEntry {
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(rename = "displaySymbol", default)]
+    display_symbol: Option<String>,
+    #[serde(default)]
+    display: Option<String>,
+    #[serde(default)]
+    symbol: Option<String>,
+    #[serde(rename = "type", default)]
+    kind: Option<String>,
+}
+
+impl FinnhubSearchEntry {
+    fn resolved_display(&self) -> String {
+        self.display_symbol
+            .clone()
+            .or_else(|| self.display.clone())
+            .unwrap_or_default()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct FinnhubScreenerResponse {
+    #[serde(default)]
+    data: Vec<FinnhubScreenerRow>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct FinnhubScreenerRow {
+    #[serde(default)]
+    ticker: Option<String>,
+}
+
+/// Percent-encode a string so it can be interpolated safely into a URL.
+pub(crate) fn url_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}
+
+/// Map raw Finnhub `/search` entries into deduplicated, alphabetized results.
+/// Exchange suffixes ("AAPL:US") are stripped.
+pub(crate) fn map_search_entries(entries: Vec<FinnhubSearchEntry>) -> Vec<StockSearchResult> {
+    let mut results: Vec<StockSearchResult> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for entry in entries {
+        let display = entry.resolved_display();
+        let raw_symbol = entry.symbol.unwrap_or_default();
+        let base = raw_symbol.split(':').next().unwrap_or("").to_uppercase();
+        if base.is_empty() || base.len() > 10 || !seen.insert(base.clone()) {
+            continue;
+        }
+        results.push(StockSearchResult {
+            symbol: base,
+            description: entry.description.unwrap_or_default(),
+            display,
+            kind: entry.kind,
+        });
+    }
+    results.sort_by(|a, b| a.symbol.cmp(&b.symbol));
+    results
+}
+
+/// Extract, deduplicate and alphabetize ticker symbols from the Finnhub
+/// `/stock/screener` response (BTreeSet gives us the sort for free).
+pub(crate) fn map_screener_rows(rows: Vec<FinnhubScreenerRow>) -> Vec<String> {
+    rows.into_iter()
+        .filter_map(|r| r.ticker)
+        .map(|t| t.split(':').next().unwrap_or("").to_uppercase())
+        .filter(|t| !t.is_empty() && t.chars().all(|c| c.is_ascii_alphanumeric()))
+        .collect::<std::collections::BTreeSet<String>>()
+        .into_iter()
+        .collect()
+}
+
+#[derive(Debug, Deserialize)]
 struct FinnhubRecommendation {
     #[serde(rename = "strongBuy")]
     strong_buy: Option<i32>,
@@ -129,10 +223,15 @@ struct FinnhubRecommendation {
     strong_sell: Option<i32>,
 }
 
+/// How long the full alphabetical ticker list is kept before re-fetching
+/// from the screener endpoint (the universe of listed symbols barely moves).
+const TICKER_LIST_TTL: Duration = Duration::from_secs(3600);
+
 pub struct FinnhubDataProvider {
     api_key: String,
     #[allow(dead_code)]
     client: reqwest::Client,
+    ticker_list_cache: std::sync::Mutex<Option<(Instant, Vec<String>)>>,
 }
 
 impl FinnhubDataProvider {
@@ -140,7 +239,15 @@ impl FinnhubDataProvider {
         Self {
             api_key,
             client: reqwest::Client::new(),
+            ticker_list_cache: std::sync::Mutex::new(None),
         }
+    }
+
+    fn new_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to build tokio runtime")
     }
 
     async fn fetch<T: serde::de::DeserializeOwned>(_api_key: &str, url: &str) -> Result<T, String> {
@@ -148,6 +255,135 @@ impl FinnhubDataProvider {
         let response = client.get(url).send().await.map_err(|e| e.to_string())?;
         let body = response.text().await.map_err(|e| e.to_string())?;
         serde_json::from_str(&body).map_err(|e| format!("JSON parse error: {}", e))
+    }
+
+    /// Free-text symbol search against Finnhub's `/search` endpoint
+    /// (US exchange). Returns up to 20 results, stock entries preferred.
+    async fn search_symbols_inner(api_key: &str, query: &str) -> Option<Vec<StockSearchResult>> {
+        let q = query.trim();
+        if q.is_empty() {
+            return Some(Vec::new());
+        }
+        let url = format!(
+            "https://finnhub.io/api/v1/search?q={}&exchange=US&token={}",
+            url_encode(q),
+            api_key
+        );
+        let resp: FinnhubSearchResponse = Self::fetch(api_key, &url).await.ok()?;
+        let mut results = map_search_entries(resp.result);
+        // Prefer real stocks ("Common Stock"); if the API only returned
+        // funds/indices for this query, keep those instead of an empty list.
+        let stocks: Vec<StockSearchResult> = results
+            .iter()
+            .filter(|r| r.kind.as_deref().map(|k| k.to_lowercase().contains("stock")).unwrap_or(true))
+            .cloned()
+            .collect();
+        if !stocks.is_empty() {
+            results = stocks;
+        }
+        Some(results.into_iter().take(20).collect())
+    }
+
+    /// Fetch the full US ticker universe from the Finnhub screener endpoint.
+    /// (Screener requires a paid Finnhub plan; returns `None` on free tiers.)
+    async fn screener_tickers(api_key: &str) -> Option<Vec<String>> {
+        let url = format!(
+            "https://finnhub.io/api/v1/stock/screener?exchange=US&token={}",
+            api_key
+        );
+        let resp: FinnhubScreenerResponse = Self::fetch(api_key, &url).await.ok()?;
+        let list = map_screener_rows(resp.data);
+        if list.is_empty() {
+            None
+        } else {
+            Some(list)
+        }
+    }
+
+    /// Fallback universe for free API keys: the S&P 500 constituents CSV from
+    /// the public `datasets` GitHub repo (no API key, static CDN, stable URL).
+    async fn sp500_tickers() -> Option<Vec<String>> {
+        let url = "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/main/data/constituents.csv";
+        let client = reqwest::Client::new();
+        let body = client.get(url).send().await.ok()?.text().await.ok()?;
+        let symbols: Vec<String> = body
+            .lines()
+            .skip(1) // header row
+            .filter_map(|line| line.split(',').next())
+            .map(|s| s.trim().trim_matches('"').to_uppercase())
+            .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '.'))
+            .collect::<std::collections::BTreeSet<String>>()
+            .into_iter()
+            .collect();
+        if symbols.is_empty() {
+            None
+        } else {
+            Some(symbols)
+        }
+    }
+
+    /// Full alphabetized ticker list, layered API methodology:
+    /// 1. Finnhub `/stock/screener` (full US universe, paid plans)
+    /// 2. S&P 500 constituents CSV (keyless public dataset, free-tier fallback)
+    /// 3. curated in-app ticker list (offline fallback, handled by caller)
+    async fn all_tickers_inner(api_key: &str) -> Option<Vec<String>> {
+        if let Some(list) = Self::screener_tickers(api_key).await {
+            return Some(list);
+        }
+        Self::sp500_tickers().await
+    }
+
+    /// Synchronous free-text search (blocking; runs the HTTP call on a worker
+    /// thread, same pattern as `get_stock_data`).
+    pub fn search(&self, query: &str) -> Vec<StockSearchResult> {
+        if query.trim().is_empty() {
+            return Vec::new();
+        }
+        let api_key = self.api_key.clone();
+        let query = query.to_string();
+        std::thread::spawn(move || {
+            let rt = Self::new_runtime();
+            rt.block_on(Self::search_symbols_inner(&api_key, &query))
+        })
+        .join()
+        .unwrap_or(None)
+        .unwrap_or_default()
+    }
+
+    /// Alphabetical list of every available US ticker.
+    ///
+    /// Methodology: `all_tickers_inner` tries the Finnhub screener API first
+    /// (paid plans), then the keyless S&P 500 constituents CSV. Symbols are
+    /// deduplicated, upper-cased and sorted with a BTreeSet, then cached
+    /// in-process for `TICKER_LIST_TTL`. On failure a stale cache is used,
+    /// falling back to the curated supported list.
+    pub fn all_tickers(&self) -> Vec<String> {
+        if let Some((fetched_at, list)) = self.ticker_list_cache.lock().unwrap().clone() {
+            if fetched_at.elapsed() <= TICKER_LIST_TTL {
+                return list;
+            }
+        }
+        let api_key = self.api_key.clone();
+        let fetched = std::thread::spawn(move || {
+            let rt = Self::new_runtime();
+            rt.block_on(Self::all_tickers_inner(&api_key))
+        })
+        .join()
+        .unwrap_or(None);
+        match fetched {
+            Some(list) => {
+                *self.ticker_list_cache.lock().unwrap() = Some((Instant::now(), list.clone()));
+                list
+            }
+            // A stale cache beats nothing; the curated list beats an empty one.
+            None => self
+                .ticker_list_cache
+                .lock()
+                .unwrap()
+                .clone()
+                .map(|(_, list)| list)
+                .unwrap_or_else(|| self.list_supported_tickers()),
+        }
     }
 
     async fn get_stock_data_from_api_inner(api_key: &str, ticker: &str) -> Option<StockRatingData> {
@@ -369,5 +605,133 @@ impl StockDataProvider for FinnhubDataProvider {
 
     fn provider_name(&self) -> &'static str {
         "FinnhubDataProvider"
+    }
+
+    fn search_symbols(&self, query: &str) -> Vec<StockSearchResult> {
+        self.search(query)
+    }
+
+    fn list_all_tickers(&self) -> Vec<String> {
+        self.all_tickers()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_url_encode_keeps_unreserved_chars() {
+        assert_eq!(url_encode("AAPL"), "AAPL");
+        assert_eq!(url_encode("a.b-c_d~e"), "a.b-c_d~e");
+    }
+
+    #[test]
+    fn test_url_encode_encodes_special_chars() {
+        assert_eq!(url_encode("big tech"), "big%20tech");
+        assert_eq!(url_encode("a&b=c?d/e"), "a%26b%3Dc%3Fd%2Fe");
+    }
+
+    #[test]
+    fn test_map_search_entries_dedupes_and_strips_exchange_suffix() {
+        let entries = vec![
+            FinnhubSearchEntry {
+                display_symbol: None,
+                description: Some("Apple Inc.".into()),
+                display: Some("AAPL:US".into()),
+                symbol: Some("AAPL:US".into()),
+                kind: Some("stock".into()),
+            },
+            FinnhubSearchEntry {
+                display_symbol: None,
+                description: Some("Apple Inc. (duplicate)".into()),
+                display: Some("AAPL".into()),
+                symbol: Some("AAPL".into()),
+                kind: Some("stock".into()),
+            },
+            FinnhubSearchEntry {
+                display_symbol: None,
+                description: Some("".into()),
+                display: None,
+                symbol: None,
+                kind: None,
+            },
+        ];
+        let results = map_search_entries(entries);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].symbol, "AAPL");
+        assert_eq!(results[0].description, "Apple Inc.");
+    }
+
+    #[test]
+    fn test_map_search_entries_sorts_alphabetically() {
+        let entries = vec![
+            FinnhubSearchEntry {
+                display_symbol: None,
+                description: None,
+                display: None,
+                symbol: Some("MSFT".into()),
+                kind: None,
+            },
+            FinnhubSearchEntry {
+                display_symbol: None,
+                description: None,
+                display: None,
+                symbol: Some("AAPL".into()),
+                kind: None,
+            },
+        ];
+        let results = map_search_entries(entries);
+        let symbols: Vec<_> = results.iter().map(|r| r.symbol.as_str()).collect();
+        assert_eq!(symbols, vec!["AAPL", "MSFT"]);
+    }
+
+    #[test]
+    fn test_map_screener_rows_dedupes_and_sorts() {
+        let rows = vec![
+            FinnhubScreenerRow {
+                ticker: Some("msft".into()),
+            },
+            FinnhubScreenerRow {
+                ticker: Some("AAPL:US".into()),
+            },
+            FinnhubScreenerRow {
+                ticker: Some("msft".into()),
+            },
+            FinnhubScreenerRow {
+                ticker: Some("M7".into()),
+            },
+            FinnhubScreenerRow {
+                ticker: None,
+            },
+            FinnhubScreenerRow {
+                ticker: Some("".into()),
+            },
+        ];
+        let list = map_screener_rows(rows);
+        assert_eq!(list, vec!["AAPL", "M7", "MSFT"]);
+    }
+
+    #[test]
+    fn test_screener_response_parsing() {
+        let json = r#"{"data":[{"ticker":"BBAI"},{"ticker":"AA"},{"foo":1}]}"#;
+        let resp: FinnhubScreenerResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(map_screener_rows(resp.data), vec!["AA", "BBAI"]);
+    }
+
+    #[test]
+    fn test_all_tickers_falls_back_to_curated_list_offline() {
+        // Invalid key + no usable network result: must not panic and must
+        // return the curated supported-ticker list instead of an empty vec.
+        let provider = FinnhubDataProvider::new("invalid-key-for-offline-test".into());
+        let list = provider.all_tickers();
+        assert!(!list.is_empty());
+        assert!(list.contains(&"AAPL".to_string()));
+    }
+
+    #[test]
+    fn test_search_empty_query_short_circuits() {
+        let provider = FinnhubDataProvider::new("whatever".into());
+        assert!(provider.search("   ").is_empty());
     }
 }

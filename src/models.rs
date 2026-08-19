@@ -54,6 +54,17 @@ pub enum Recommendation {
     StrongSell,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StockSearchResult {
+    pub symbol: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub display: String,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct MarketSentiment {
     pub target_price_consensus: Option<f64>,

@@ -8,7 +8,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::models::{Recommendation, StockRatingData};
+use crate::models::{Recommendation, StockRatingData, StockSearchResult};
 use crate::providers::StockDataProvider;
 use crate::services::stock_aggregation::*;
 
@@ -1600,6 +1600,8 @@ pub fn setup_router(
         .route("/api/all-stocks", get(all_stocks_handler))
         .route("/api/all-tickers", get(all_tickers_handler))
         .route("/api/chart", get(chart_api_handler))
+        .route("/api/finnhub/search", get(api_finnhub_search_handler))
+        .route("/api/finnhub/tickers", get(api_finnhub_tickers_handler))
         .with_state(state)
 }
 
@@ -1697,6 +1699,39 @@ async fn finnhub_handler(
             };
             Html(html_finnhub(&tickers, &requested, selected.as_ref()))
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Finnhub JSON API: symbol search + full alphabetical ticker universe.
+// Both return 503 while the Finnhub provider is not configured.
+// ---------------------------------------------------------------------------
+
+async fn api_finnhub_search_handler(
+    State(state): State<AppState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<Vec<StockSearchResult>>, (StatusCode, String)> {
+    let query = params.get("q").cloned().unwrap_or_default();
+    let providers = state.providers.read().unwrap();
+    match providers.iter().find(|p| p.provider_name() == "FinnhubDataProvider") {
+        Some(fp) => Ok(Json(fp.search_symbols(&query))),
+        None => Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "FinnhubDataProvider is not configured (missing API key)".to_string(),
+        )),
+    }
+}
+
+async fn api_finnhub_tickers_handler(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<String>>, (StatusCode, String)> {
+    let providers = state.providers.read().unwrap();
+    match providers.iter().find(|p| p.provider_name() == "FinnhubDataProvider") {
+        Some(fp) => Ok(Json(fp.list_all_tickers())),
+        None => Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "FinnhubDataProvider is not configured (missing API key)".to_string(),
+        )),
     }
 }
 
@@ -1848,11 +1883,6 @@ fn render_finnhub_detail(data: &StockRatingData) -> String {
 fn html_finnhub(tickers: &[String], requested: &str, selected: Option<&StockRatingData>) -> String {
     let nav_ticker = if requested.is_empty() { "AAPL".to_string() } else { requested.to_string() };
 
-    let datalist_options: String = tickers
-        .iter()
-        .map(|t| format!("<option value=\"{}\">", t))
-        .collect();
-
     let mut cards = String::new();
     for t in tickers {
         let active = if *t == requested { " active" } else { "" };
@@ -1865,9 +1895,9 @@ fn html_finnhub(tickers: &[String], requested: &str, selected: Option<&StockRati
     let detail_html = match selected {
         Some(data) => render_finnhub_detail(data),
         None if !requested.is_empty() => format!(
-            r#"<div class="detail notfound"><div class="nf-icon">&#9888;</div><h3>No Finnhub data for "{requested}"</h3><p>This ticker isn't available from the Finnhub provider. Try one of the supported tickers below.</p></div>"#
+            r#"<div class="detail notfound"><div class="nf-icon">&#9888;</div><h3>No Finnhub data for "{requested}"</h3><p>The Finnhub API returned no data for this ticker. Use the search box to find the correct symbol (it searches the full US universe by name or ticker), or pick a popular ticker below.</p></div>"#
         ),
-        None => r#"<div class="detail hint"><p>Select a ticker in the search box above or click a card below to see live Finnhub details.</p></div>"#.to_string(),
+        None => r#"<div class="detail hint"><p>Type a company name or ticker in the search box above (e.g. "apple" or "NVDA"), or click a ticker below, to see live Finnhub details.</p></div>"#.to_string(),
     };
 
     format!(
@@ -1948,6 +1978,30 @@ fn html_finnhub(tickers: &[String], requested: &str, selected: Option<&StockRati
         .fh-card.active {{ border-color: var(--accent-blue); box-shadow: 0 0 0 2px rgba(59,130,246,0.3); }}
         .fh-card-symbol {{ font-size: 1.2rem; font-weight: 800; }}
         .fh-card-label {{ color: var(--text-muted); font-size: 0.78rem; margin-top: 4px; }}
+        .search-wrap {{ position: relative; flex: 1; }}
+        .search-wrap input {{ width: 100%; }}
+        .fh-suggest {{ position: absolute; top: calc(100% + 6px); left: 0; right: 0; background: var(--bg-card); border: 1px solid var(--border-light); border-radius: 12px; box-shadow: 0 16px 40px rgba(0,0,0,0.55); max-height: 320px; overflow-y: auto; z-index: 60; }}
+        .fh-suggest-item {{ display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 12px 16px; cursor: pointer; border-bottom: 1px solid var(--border); }}
+        .fh-suggest-item:last-child {{ border-bottom: none; }}
+        .fh-suggest-item:hover, .fh-suggest-item.active {{ background: var(--bg-card-hover); }}
+        .fh-suggest .fh-sym {{ font-weight: 700; color: var(--accent-blue); white-space: nowrap; }}
+        .fh-suggest .fh-desc {{ color: var(--text-secondary); font-size: 0.88rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+        .fh-suggest-empty {{ padding: 14px 16px; color: var(--text-muted); font-size: 0.9rem; }}
+        .letter-nav {{ display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }}
+        .letter-btn {{ width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; border-radius: 9px; background: var(--bg-card); border: 1px solid var(--border); color: var(--text-secondary); text-decoration: none; font-size: 0.85rem; font-weight: 600; }}
+        .letter-btn:hover {{ background: var(--accent-blue); border-color: var(--accent-blue); color: white; }}
+        .fh-alpha {{ display: flex; flex-direction: column; gap: 8px; }}
+        .alpha-loading {{ color: var(--text-muted); padding: 12px 0; }}
+        .alpha-group {{ background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }}
+        .alpha-group summary {{ list-style: none; cursor: pointer; display: flex; align-items: center; gap: 12px; padding: 12px 18px; font-weight: 700; font-size: 1.05rem; }}
+        .alpha-group summary::-webkit-details-marker {{ display: none; }}
+        .alpha-group summary::before {{ content: "\25B8"; color: var(--text-muted); font-size: 0.8rem; transition: transform 0.15s; }}
+        .alpha-group[open] summary::before {{ transform: rotate(90deg); }}
+        .alpha-count {{ color: var(--text-muted); font-weight: 500; font-size: 0.8rem; }}
+        .alpha-list {{ display: flex; flex-wrap: wrap; gap: 8px; padding: 6px 18px 16px; }}
+        .alpha-link {{ padding: 5px 12px; border-radius: 999px; background: var(--bg-secondary); border: 1px solid var(--border); color: var(--text-secondary); text-decoration: none; font-size: 0.85rem; font-weight: 600; }}
+        .alpha-link:hover {{ color: var(--text-primary); border-color: var(--accent-blue); }}
+        .alpha-link.active {{ background: var(--accent-blue); border-color: var(--accent-blue); color: white; }}
         .foot-note {{ margin-top: 32px; color: var(--text-muted); font-size: 0.8rem; text-align: center; }}
     </style>
 </head>
@@ -1973,35 +2027,199 @@ fn html_finnhub(tickers: &[String], requested: &str, selected: Option<&StockRati
             <p class="subtitle">Real-time quotes, valuation, financial health, growth and analyst sentiment from the Finnhub API.</p>
         </div>
         <form action="/finnhub" method="get" class="search-bar">
-            <input id="fh-search" list="fh-tickers" name="ticker" type="text" placeholder="Search a ticker (e.g. AAPL, NVDA, TSLA)" autocomplete="off" value="{requested}">
-            <datalist id="fh-tickers">{datalist_options}</datalist>
+            <div class="search-wrap">
+                <input id="fh-search" name="ticker" type="text" placeholder="Search by name or ticker (e.g. AAPL, apple, NVDA, nvidia)" autocomplete="off" spellcheck="false" value="{requested}">
+                <div id="fh-suggest" class="fh-suggest" hidden></div>
+            </div>
             <button type="submit">Search</button>
         </form>
         {detail_html}
-        <div class="section-title">All Finnhub Tickers <span class="count">({ticker_count})</span></div>
+        <div class="section-title">Popular Tickers <span class="count">({ticker_count})</span></div>
         <div class="fh-grid">{ticker_cards}</div>
-        <div class="foot-note">Data served by FinnhubDataProvider, cached in-memory (TTL 300s). Live values are refreshed in the background while the app runs.</div>
+        <div class="section-title">Browse All Stocks <span class="count" id="fh-total-count"></span></div>
+        <div class="letter-nav" id="fh-letter-nav"></div>
+        <div id="fh-alpha" class="fh-alpha"><div class="alpha-loading">Loading the full US ticker list from Finnhub&hellip;</div></div>
+        <div class="foot-note">Data served by FinnhubDataProvider, cached in-memory (TTL 300s). Live values are refreshed in the background while the app runs. The full ticker list is fetched from the Finnhub screener API, sorted alphabetically and cached for one hour.</div>
     </div>
     <script>
         (function () {{
-            var q = document.getElementById('fh-search');
+            var input = document.getElementById('fh-search');
+            var box = document.getElementById('fh-suggest');
             var cards = document.querySelectorAll('.fh-card');
-            if (q) {{
-                q.addEventListener('input', function () {{
-                    var term = q.value.trim().toUpperCase();
-                    cards.forEach(function (c) {{
-                        var t = c.getAttribute('data-ticker');
-                        c.style.display = (t.indexOf(term) === 0) ? '' : 'none';
-                    }});
+            if (!input || !box) return;
+
+            var items = [];
+            var activeIdx = -1;
+            var timer = null;
+
+            function closeSuggest() {{
+                box.hidden = true;
+                box.innerHTML = '';
+                items = [];
+                activeIdx = -1;
+            }}
+
+            function highlight(i) {{
+                activeIdx = i;
+                Array.prototype.forEach.call(box.children, function (el, idx) {{
+                    el.classList.toggle('active', idx === i);
                 }});
             }}
+
+            function selectTicker(sym) {{
+                window.location.href = '/finnhub?ticker=' + encodeURIComponent(sym);
+            }}
+
+            function renderSuggest(results) {{
+                items = results || [];
+                activeIdx = -1;
+                box.innerHTML = '';
+                if (!items.length) {{
+                    var empty = document.createElement('div');
+                    empty.className = 'fh-suggest-empty';
+                    empty.textContent = 'No matches — press Enter to look up the exact ticker';
+                    box.appendChild(empty);
+                    box.hidden = false;
+                    return;
+                }}
+                items.forEach(function (r) {{
+                    var el = document.createElement('div');
+                    el.className = 'fh-suggest-item';
+                    var sym = document.createElement('span');
+                    sym.className = 'fh-sym';
+                    sym.textContent = r.symbol;
+                    var desc = document.createElement('span');
+                    desc.className = 'fh-desc';
+                    desc.textContent = r.description || r.display || '';
+                    el.appendChild(sym);
+                    el.appendChild(desc);
+                    el.addEventListener('mousedown', function (e) {{
+                        e.preventDefault();
+                        selectTicker(r.symbol);
+                    }});
+                    box.appendChild(el);
+                }});
+                box.hidden = false;
+            }}
+
+            function filterCards() {{
+                var term = input.value.trim().toUpperCase();
+                cards.forEach(function (c) {{
+                    var t = c.getAttribute('data-ticker');
+                    c.style.display = (t.indexOf(term) === 0) ? '' : 'none';
+                }});
+            }}
+
+            input.addEventListener('input', function () {{
+                filterCards();
+                var q = input.value.trim();
+                clearTimeout(timer);
+                if (q.length < 1) {{
+                    closeSuggest();
+                    return;
+                }}
+                timer = setTimeout(function () {{
+                    fetch('/api/finnhub/search?q=' + encodeURIComponent(q))
+                        .then(function (res) {{
+                            if (!res.ok) throw new Error('search failed');
+                            return res.json();
+                        }})
+                        .then(renderSuggest)
+                        .catch(closeSuggest);
+                }}, 250);
+            }});
+
+            input.addEventListener('keydown', function (e) {{
+                if (box.hidden || !items.length) return;
+                if (e.key === 'ArrowDown') {{
+                    e.preventDefault();
+                    highlight((activeIdx + 1) % items.length);
+                }} else if (e.key === 'ArrowUp') {{
+                    e.preventDefault();
+                    highlight((activeIdx - 1 + items.length) % items.length);
+                }} else if (e.key === 'Enter') {{
+                    if (activeIdx >= 0 && items[activeIdx]) {{
+                        e.preventDefault();
+                        selectTicker(items[activeIdx].symbol);
+                    }}
+                }} else if (e.key === 'Escape') {{
+                    closeSuggest();
+                }}
+            }});
+
+            document.addEventListener('click', function (e) {{
+                if (e.target !== input && !box.contains(e.target)) closeSuggest();
+            }});
+
+            // ------------------------------------------------------------------
+            // Alphabetical universe: fetch the full sorted ticker list and
+            // render it grouped by first letter with a quick-jump letter nav.
+            // ------------------------------------------------------------------
+            var alpha = document.getElementById('fh-alpha');
+            var letterNav = document.getElementById('fh-letter-nav');
+            var totalCount = document.getElementById('fh-total-count');
+            var activeTicker = '{nav_ticker}';
+            if (!alpha || !letterNav) return;
+
+            fetch('/api/finnhub/tickers')
+                .then(function (res) {{
+                    if (!res.ok) throw new Error('ticker list unavailable');
+                    return res.json();
+                }})
+                .then(function (tickers) {{
+                    if (!Array.isArray(tickers) || !tickers.length) {{
+                        alpha.innerHTML = '<div class="alpha-loading">Ticker list unavailable right now.</div>';
+                        return;
+                    }}
+                    if (totalCount) totalCount.textContent = '(' + tickers.length + ')';
+                    alpha.innerHTML = '';
+                    var letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+                    letters.forEach(function (ch) {{
+                        var group = tickers.filter(function (t) {{ return t.charAt(0) === ch; }});
+                        if (!group.length) return;
+                        var det = document.createElement('details');
+                        det.className = 'alpha-group';
+                        det.id = 'fh-alpha-' + ch;
+                        if (activeTicker.charAt(0) === ch) det.open = true;
+                        var sum = document.createElement('summary');
+                        sum.textContent = ch;
+                        var cnt = document.createElement('span');
+                        cnt.className = 'alpha-count';
+                        cnt.textContent = '(' + group.length + ')';
+                        sum.appendChild(cnt);
+                        det.appendChild(sum);
+                        var list = document.createElement('div');
+                        list.className = 'alpha-list';
+                        group.forEach(function (t) {{
+                            var a = document.createElement('a');
+                            a.className = 'alpha-link' + (t === activeTicker ? ' active' : '');
+                            a.href = '/finnhub?ticker=' + encodeURIComponent(t);
+                            a.textContent = t;
+                            list.appendChild(a);
+                        }});
+                        det.appendChild(list);
+                        alpha.appendChild(det);
+                        var btn = document.createElement('a');
+                        btn.className = 'letter-btn';
+                        btn.href = '#fh-alpha-' + ch;
+                        btn.textContent = ch;
+                        btn.addEventListener('click', function (e) {{
+                            e.preventDefault();
+                            det.open = true;
+                            det.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
+                        }});
+                        letterNav.appendChild(btn);
+                    }});
+                }})
+                .catch(function () {{
+                    alpha.innerHTML = '<div class="alpha-loading">Ticker list unavailable right now (Finnhub API not reachable).</div>';
+                }});
         }})();
     </script>
 </body>
 </html>"#,
         nav_ticker = nav_ticker,
         requested = requested,
-        datalist_options = datalist_options,
         detail_html = detail_html,
         ticker_count = tickers.len(),
         ticker_cards = cards,
