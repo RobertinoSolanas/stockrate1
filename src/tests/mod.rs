@@ -270,7 +270,7 @@ mod mock_data_provider_tests {
     fn test_mock_data_provider_list_supported_tickers() {
         let provider = MockDataProvider::new();
         let tickers = provider.list_supported_tickers();
-        assert_eq!(tickers.len(), 5);
+        assert_eq!(tickers.len(), 15);
         assert!(tickers.contains(&"AAPL".to_string()));
         assert!(tickers.contains(&"MSFT".to_string()));
         assert!(tickers.contains(&"GOOGL".to_string()));
@@ -403,7 +403,7 @@ mod second_mock_data_provider_tests {
     fn test_second_provider_list_supported_tickers() {
         let provider = SecondMockDataProvider::new();
         let tickers = provider.list_supported_tickers();
-        assert_eq!(tickers.len(), 5);
+        assert_eq!(tickers.len(), 15);
         assert!(tickers.contains(&"AAPL".to_string()));
         assert!(tickers.contains(&"MSFT".to_string()));
         assert!(tickers.contains(&"NVDA".to_string()));
@@ -414,8 +414,8 @@ mod second_mock_data_provider_tests {
     #[test]
     fn test_second_provider_name() {
         let provider: Box<dyn StockDataProvider + Send + Sync> = Box::new(SecondMockDataProvider::new());
-        assert_eq!(provider.provider_name(), "SecondMockDataProvider");
-        assert_eq!(provider.list_supported_tickers().len(), 5);
+        assert_eq!(provider.provider_name(), "SecondMockProvider");
+        assert_eq!(provider.list_supported_tickers().len(), 15);
         let data = provider.get_stock_data("AAPL").unwrap();
         assert_eq!(data.ticker, "AAPL");
         assert_eq!(data.provider, "SecondMockProvider");

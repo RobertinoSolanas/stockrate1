@@ -32,3 +32,6 @@ resources/credentials.txt
 test-results/
 playwright-report/
 msplaywright/
+
+# pi agent local settings
+.pi/

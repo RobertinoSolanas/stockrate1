@@ -280,15 +280,15 @@ mod stock_aggregation_tests {
     fn test_get_aggregated_data_second_provider_filter() {
         let service = make_service();
         let mut config = StockAggregationService::default_config();
-        config.provider_filter = vec!["SecondMockDataProvider".to_string()];
+        config.provider_filter = vec!["SecondMockProvider".to_string()];
         let data = service.get_aggregated_data(&config);
 
         for group in &data.chart_groups {
             for entry in &group.entries {
-                assert_eq!(entry.provider, "SecondMockDataProvider");
+                assert_eq!(entry.provider, "SecondMockProvider");
             }
         }
-        assert_eq!(data.providers, vec!["SecondMockDataProvider"]);
+        assert_eq!(data.providers, vec!["SecondMockProvider"]);
     }
 
     #[test]
@@ -437,7 +437,7 @@ mod stock_aggregation_tests {
         let data = service.get_aggregated_data(&config);
 
         assert!(data.providers.contains(&"MockDataProvider".to_string()));
-        assert!(data.providers.contains(&"SecondMockDataProvider".to_string()));
+        assert!(data.providers.contains(&"SecondMockProvider".to_string()));
     }
 
     // Multiple metrics test
@@ -520,7 +520,7 @@ mod stock_aggregation_tests {
         let data = service.get_all_stock_data();
         let providers: Vec<_> = data.iter().map(|(_, provider, _)| provider.as_str()).collect();
         assert!(providers.contains(&"MockDataProvider"));
-        assert!(providers.contains(&"SecondMockDataProvider"));
+        assert!(providers.contains(&"SecondMockProvider"));
     }
 }
 
