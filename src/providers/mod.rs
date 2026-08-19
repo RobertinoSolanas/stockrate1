@@ -9,3 +9,4 @@ pub trait StockDataProvider {
 pub mod mock;
 pub mod second_mock;
 pub mod finnhub;
+pub mod cache;

@@ -1582,10 +1582,12 @@ pub fn html_index(chart_groups: &[ChartGroup], tickers: &[String]) -> String {
     )
 }
 
-pub fn setup_router(providers: Vec<Box<dyn StockDataProvider + Send + Sync>>) -> Router {
-    let state = AppState {
-        providers: std::sync::Arc::new(std::sync::RwLock::new(providers)),
-    };
+pub fn setup_router(
+    providers: std::sync::Arc<
+        std::sync::RwLock<Vec<Box<dyn StockDataProvider + Send + Sync>>>,
+    >,
+) -> Router {
+    let state = AppState { providers };
 
     Router::new()
         .route("/", get(index_handler))

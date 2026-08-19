@@ -11,6 +11,11 @@ use providers::mock::MockDataProvider;
 use providers::second_mock::SecondMockDataProvider;
 use providers::finnhub::FinnhubDataProvider;
 use providers::StockDataProvider;
+use providers::cache::{
+    spawn_background_cache_warmer, CacheStore, CachedProvider, DEFAULT_CACHE_TTL,
+    DEFAULT_REFRESH_INTERVAL,
+};
+use std::sync::{Arc, RwLock};
 
 #[derive(Parser)]
 #[command(name = "stockrate", about = "StockRating Dashboard Server")]
@@ -51,6 +56,22 @@ async fn main() {
 
     let has_finnhub = providers.len() > 2;
 
+    // Wrap every provider with a transparent TTL cache, then share the provider
+    // list between the router and a background thread that keeps the cache
+    // populated while the app runs.
+    let store = Arc::new(CacheStore::new(DEFAULT_CACHE_TTL));
+    let cached: Vec<Box<dyn StockDataProvider + Send + Sync>> = providers
+        .into_iter()
+        .map(|p| -> Box<dyn StockDataProvider + Send + Sync> {
+            Box::new(CachedProvider::new(p, store.clone()))
+        })
+        .collect();
+    let providers: Arc<RwLock<Vec<Box<dyn StockDataProvider + Send + Sync>>>> =
+        Arc::new(RwLock::new(cached));
+
+    // Pre-warm the cache in the background, then refresh on an interval.
+    spawn_background_cache_warmer(providers.clone(), DEFAULT_REFRESH_INTERVAL);
+
     let app = routes::setup_router(providers);
 
     let addr = "0.0.0.0:3000";
@@ -60,6 +81,10 @@ async fn main() {
         println!("Available tickers: AAPL, MSFT, GOOGL, TSLA, AMZN, NVDA, META, AMD");
         println!("API endpoint: http://localhost:3000/api/query?ticker=AAPL");
         println!("Comparison: http://localhost:3000/compare?ticker=AAPL");
+        println!(
+            "Caching: enabled (TTL {:?}), pre-warming all providers in the background",
+            DEFAULT_CACHE_TTL
+        );
     }
 
     let listener = tokio::net::TcpListener::bind(addr)

@@ -10,7 +10,7 @@ async fn make_server() -> TestServer {
         Box::new(MockDataProvider::new()),
         Box::new(SecondMockDataProvider::new()),
     ];
-    let app = setup_router(providers);
+    let app = setup_router(std::sync::Arc::new(std::sync::RwLock::new(providers)));
     TestServer::new(app).expect("TestServer creation failed")
 }
 
