@@ -1537,6 +1537,7 @@ pub fn html_index(chart_groups: &[ChartGroup], tickers: &[String]) -> String {
             <a href="/dashboard?ticker=AAPL" class="nav-link">Analysis</a>
             <a href="/compare?ticker=AAPL" class="nav-link">Compare</a>
             <a href="/portfolio" class="nav-link">Portfolio</a>
+            <a href="/finnhub" class="nav-link">Finnhub</a>
         </div>
 
         <div class="page-header">
@@ -1594,6 +1595,7 @@ pub fn setup_router(
         .route("/dashboard", get(dashboard_handler))
         .route("/compare", get(compare_handler))
         .route("/portfolio", get(portfolio_handler))
+        .route("/finnhub", get(finnhub_handler))
         .route("/api/query", get(api_query_handler))
         .route("/api/all-stocks", get(all_stocks_handler))
         .route("/api/all-tickers", get(all_tickers_handler))
@@ -1670,6 +1672,340 @@ async fn compare_handler(
             ticker = ticker,
         ))
     }
+}
+
+// ---------------------------------------------------------------------------
+// Finnhub page: dedicated view for the live Finnhub provider with search,
+// a filterable ticker grid, and a full detail panel for a selected ticker.
+// ---------------------------------------------------------------------------
+
+async fn finnhub_handler(
+    State(state): State<AppState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Html<String> {
+    let providers = state.providers.read().unwrap();
+    let requested = extract_ticker_from_params(&params);
+
+    match providers.iter().find(|p| p.provider_name() == "FinnhubDataProvider") {
+        None => Html(html_finnhub_unavailable()),
+        Some(fp) => {
+            let tickers = fp.list_supported_tickers();
+            let selected = if requested.is_empty() {
+                None
+            } else {
+                (**fp).get_stock_data(&requested)
+            };
+            Html(html_finnhub(&tickers, &requested, selected.as_ref()))
+        }
+    }
+}
+
+fn html_finnhub_unavailable() -> String {
+    r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Finnhub - StockRating</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>*{{margin:0;padding:0;box-sizing:border-box}}body{{font-family:'Inter',sans-serif;background:#0b0f19;color:#f1f5f9;min-height:100vh;display:flex;align-items:center;justify-content:center}}.container{{text-align:center;padding:40px;max-width:560px}}h2{{font-size:1.8rem;margin-bottom:12px}}p{{color:#94a3b8;margin-bottom:10px;line-height:1.6}}a{{color:#3b82f6;text-decoration:none;font-weight:600}}code{{background:#1a2236;padding:2px 8px;border-radius:6px;color:#e2e8f0}}</style>
+</head>
+<body><div class="container"><div style="font-size:3rem;margin-bottom:16px">&#128202;</div><h2>Finnhub not configured</h2><p>The live <strong>FinnhubDataProvider</strong> is disabled because no API key was found.</p><p>Set the <code>FINNHUB_API_KEY</code> environment variable, or add <code>FINNHUB_API_KEY=your_key</code> to <code>resources/credentials.txt</code>, then restart the app.</p><p><a href="/">&#8592; Back to Dashboard</a></p></div></body>
+</html>"#.to_string()
+}
+
+fn render_finnhub_detail(data: &StockRatingData) -> String {
+    let rec = data
+        .market_sentiment
+        .recommendation_consensus
+        .clone()
+        .unwrap_or(Recommendation::Hold);
+    let rec_text = format_recommendation(&rec);
+    let rec_color = match rec {
+        Recommendation::StrongBuy => "#10b981",
+        Recommendation::Buy => "#22c55e",
+        Recommendation::Hold => "#f59e0b",
+        Recommendation::Sell => "#f97316",
+        Recommendation::StrongSell => "#ef4444",
+    };
+
+    let price = data
+        .market_sentiment
+        .current_price
+        .map(|p| format!("${:.2}", p))
+        .unwrap_or_else(|| "N/A".to_string());
+    let target = data
+        .market_sentiment
+        .target_price_consensus
+        .map(|p| format!("${:.2}", p))
+        .unwrap_or_else(|| "N/A".to_string());
+    let (upside, upside_class) = match (data.market_sentiment.target_price_consensus, data.market_sentiment.current_price) {
+        (Some(t), Some(c)) if c > 0.0 => {
+            let u = ((t - c) / c) * 100.0;
+            (format!("{:+.1}%", u), if u >= 0.0 { "up" } else { "down" })
+        }
+        _ => ("N/A".to_string(), "muted"),
+    };
+    let analysts = data
+        .market_sentiment
+        .analyst_count
+        .map(|a| a.to_string())
+        .unwrap_or_else(|| "N/A".to_string());
+    let last_updated = data
+        .last_updated
+        .map(|t| t.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+        .unwrap_or_else(|| "N/A".to_string());
+
+    let pe = data.valuation_ratios.pe_ratio.unwrap_or(0.0);
+    let fpe = data.valuation_ratios.forward_pe_ratio.unwrap_or(0.0);
+    let ev = data.valuation_ratios.ev_to_ebitda.unwrap_or(0.0);
+    let pb = data.valuation_ratios.pb_ratio.unwrap_or(0.0);
+    let roe = data.financial_health.return_on_equity.unwrap_or(0.0) * 100.0;
+    let d2e = data.financial_health.debt_to_equity.unwrap_or(0.0);
+    let cr = data.financial_health.current_ratio.unwrap_or(0.0);
+    let rev = data.growth_metrics.revenue_growth_3y.unwrap_or(0.0) * 100.0;
+    let eps = data.growth_metrics.eps_growth_3y.unwrap_or(0.0) * 100.0;
+
+    let val_chart = create_bar_chart(
+        &[("P/E".to_string(), pe, "#3b82f6".to_string()),
+          ("Fwd P/E".to_string(), fpe, "#8b5cf6".to_string()),
+          ("EV/EBITDA".to_string(), ev, "#ec4899".to_string()),
+          ("P/B".to_string(), pb, "#06b6d4".to_string())],
+        &["#3b82f6", "#8b5cf6", "#ec4899", "#06b6d4"],
+        "Valuation Metrics",
+    );
+    let health_chart = create_bar_chart(
+        &[("ROE".to_string(), roe, "#10b981".to_string()),
+          ("Debt/Equity".to_string(), d2e, "#f59e0b".to_string()),
+          ("Current Ratio".to_string(), cr, "#3b82f6".to_string())],
+        &["#10b981", "#f59e0b", "#3b82f6"],
+        "Financial Health",
+    );
+    let growth_chart = create_bar_chart(
+        &[("Revenue 3Y".to_string(), rev, "#22c55e".to_string()),
+          ("EPS 3Y".to_string(), eps, "#3b82f6".to_string())],
+        &["#22c55e", "#3b82f6"],
+        "Growth (3-Year Annualized)",
+    );
+
+    let (val_label, val_color) = valuation_assessment(
+        data.valuation_ratios.pe_ratio,
+        data.valuation_ratios.ev_to_ebitda,
+    );
+    let (health_label, health_color) = health_score_label(
+        data.financial_health.return_on_equity.unwrap_or(0.0),
+        data.financial_health.debt_to_equity.unwrap_or(0.0),
+    );
+    let (growth_label, growth_color) = growth_assessment(
+        data.growth_metrics.revenue_growth_3y,
+        data.growth_metrics.eps_growth_3y,
+    );
+
+    format!(
+        r#"<div class="detail">
+            <div class="detail-head">
+                <div>
+                    <div class="detail-symbol">{ticker} <span class="provider-pill">FinnhubDataProvider</span></div>
+                    <div class="detail-name">{company_name}</div>
+                </div>
+                <div class="detail-updated">Updated: {last_updated}</div>
+            </div>
+            <div class="stat-row">
+                <div class="stat"><div class="stat-label">Current Price</div><div class="stat-value">{price}</div></div>
+                <div class="stat"><div class="stat-label">Target Price</div><div class="stat-value">{target}</div></div>
+                <div class="stat"><div class="stat-label">Upside</div><div class="stat-value {upside_class}">{upside}</div></div>
+                <div class="stat"><div class="stat-label">Recommendation</div><div class="stat-value"><span class="rec-badge" style="background:{rec_color}">{rec_text}</span></div></div>
+                <div class="stat"><div class="stat-label">Analysts</div><div class="stat-value">{analysts}</div></div>
+            </div>
+            <div class="charts">
+                <div class="chart-card">{val_chart}<div class="assess" style="color:{val_color}">&#9679; Valuation: {val_label}</div></div>
+                <div class="chart-card">{health_chart}<div class="assess" style="color:{health_color}">&#9679; Health: {health_label}</div></div>
+                <div class="chart-card">{growth_chart}<div class="assess" style="color:{growth_color}">&#9679; Growth: {growth_label}</div></div>
+            </div>
+        </div>"#,
+        ticker = data.ticker,
+        company_name = data.company_name,
+        last_updated = last_updated,
+        price = price,
+        target = target,
+        upside = upside,
+        upside_class = upside_class,
+        rec_text = rec_text,
+        rec_color = rec_color,
+        analysts = analysts,
+        val_chart = val_chart,
+        health_chart = health_chart,
+        growth_chart = growth_chart,
+        val_color = val_color,
+        val_label = val_label,
+        health_color = health_color,
+        health_label = health_label,
+        growth_color = growth_color,
+        growth_label = growth_label,
+    )
+}
+
+fn html_finnhub(tickers: &[String], requested: &str, selected: Option<&StockRatingData>) -> String {
+    let nav_ticker = if requested.is_empty() { "AAPL".to_string() } else { requested.to_string() };
+
+    let datalist_options: String = tickers
+        .iter()
+        .map(|t| format!("<option value=\"{}\">", t))
+        .collect();
+
+    let mut cards = String::new();
+    for t in tickers {
+        let active = if *t == requested { " active" } else { "" };
+        cards.push_str(&format!(
+            r#"<a href="/finnhub?ticker={}" class="fh-card{}" data-ticker="{}"><div class="fh-card-symbol">{}</div><div class="fh-card-label">View details</div></a>"#,
+            t, active, t, t
+        ));
+    }
+
+    let detail_html = match selected {
+        Some(data) => render_finnhub_detail(data),
+        None if !requested.is_empty() => format!(
+            r#"<div class="detail notfound"><div class="nf-icon">&#9888;</div><h3>No Finnhub data for "{requested}"</h3><p>This ticker isn't available from the Finnhub provider. Try one of the supported tickers below.</p></div>"#
+        ),
+        None => r#"<div class="detail hint"><p>Select a ticker in the search box above or click a card below to see live Finnhub details.</p></div>"#.to_string(),
+    };
+
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Finnhub - StockRating</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        :root {{
+            --bg-primary: #0b0f19;
+            --bg-secondary: #111827;
+            --bg-card: #1a2236;
+            --bg-card-hover: #1f2a42;
+            --border: #2d3a52;
+            --border-light: #3b4a66;
+            --text-primary: #f1f5f9;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --accent-blue: #3b82f6;
+            --green: #10b981;
+            --red: #ef4444;
+            --purple: #8b5cf6;
+        }}
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{ font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; background: var(--bg-primary); color: var(--text-primary); min-height: 100vh; }}
+        .bg-grid {{ position: fixed; inset: 0; background-image: linear-gradient(rgba(59,130,246,0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(59,130,246,0.03) 1px, transparent 1px); background-size: 50px 50px; pointer-events: none; z-index: 0; }}
+        .bg-glow {{ position: fixed; top: -200px; left: 50%; transform: translateX(-50%); width: 800px; height: 600px; background: radial-gradient(circle, rgba(59,130,246,0.08) 0%, transparent 70%); pointer-events: none; z-index: 0; }}
+        .container {{ max-width: 1200px; margin: 0 auto; padding: 0 24px 48px; position: relative; z-index: 1; }}
+        header {{ padding: 24px 0; border-bottom: 1px solid var(--border); margin-bottom: 24px; }}
+        .header-inner {{ display: flex; justify-content: space-between; align-items: center; }}
+        .logo {{ display: flex; align-items: center; gap: 12px; }}
+        .logo-icon {{ width: 40px; height: 40px; background: linear-gradient(135deg, var(--accent-blue), var(--purple)); border-radius: 10px; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 1.1rem; color: white; }}
+        .logo-text {{ font-size: 1.3rem; font-weight: 700; }}
+        .logo-text span {{ color: var(--accent-blue); }}
+        .provider-tag {{ font-size: 0.85rem; color: var(--text-secondary); border: 1px solid var(--border); padding: 6px 14px; border-radius: 999px; }}
+        .nav-bar {{ display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 28px; padding: 6px; background: var(--bg-secondary); border-radius: 14px; border: 1px solid var(--border); width: fit-content; }}
+        .nav-link {{ padding: 10px 18px; border-radius: 10px; text-decoration: none; color: var(--text-secondary); font-weight: 500; font-size: 0.9rem; }}
+        .nav-link:hover {{ color: var(--text-primary); background: var(--bg-card); }}
+        .nav-link.active {{ background: var(--accent-blue); color: white; }}
+        .page-head {{ margin-bottom: 20px; }}
+        .page-head h1 {{ font-size: 1.8rem; font-weight: 700; margin-bottom: 6px; }}
+        .page-head .subtitle {{ color: var(--text-secondary); font-size: 0.95rem; }}
+        .search-bar {{ display: flex; gap: 10px; margin-bottom: 28px; }}
+        .search-bar input {{ flex: 1; padding: 14px 16px; border-radius: 12px; border: 1px solid var(--border); background: var(--bg-card); color: var(--text-primary); font-size: 1rem; font-family: inherit; }}
+        .search-bar input:focus {{ outline: none; border-color: var(--accent-blue); box-shadow: 0 0 0 3px rgba(59,130,246,0.15); }}
+        .search-bar button {{ padding: 14px 26px; border-radius: 12px; border: none; background: var(--accent-blue); color: white; font-size: 1rem; font-weight: 600; cursor: pointer; font-family: inherit; }}
+        .search-bar button:hover {{ background: #2563eb; }}
+        .detail {{ background: var(--bg-card); border: 1px solid var(--border); border-radius: 16px; padding: 24px; margin-bottom: 32px; }}
+        .detail.hint {{ text-align: center; color: var(--text-secondary); padding: 40px; }}
+        .detail.notfound {{ text-align: center; }}
+        .detail.notfound .nf-icon {{ font-size: 3rem; margin-bottom: 12px; }}
+        .detail.notfound h3 {{ font-size: 1.3rem; margin-bottom: 8px; }}
+        .detail.notfound p {{ color: var(--text-secondary); }}
+        .detail-head {{ display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }}
+        .detail-symbol {{ font-size: 1.6rem; font-weight: 800; display: flex; align-items: center; gap: 10px; }}
+        .provider-pill {{ font-size: 0.7rem; font-weight: 600; color: var(--accent-blue); background: rgba(59,130,246,0.15); border: 1px solid rgba(59,130,246,0.3); padding: 3px 10px; border-radius: 999px; }}
+        .detail-name {{ color: var(--text-secondary); margin-top: 4px; }}
+        .detail-updated {{ color: var(--text-muted); font-size: 0.8rem; }}
+        .stat-row {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; margin-bottom: 24px; }}
+        .stat {{ background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }}
+        .stat-label {{ color: var(--text-muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px; }}
+        .stat-value {{ font-size: 1.4rem; font-weight: 700; }}
+        .stat-value.up {{ color: var(--green); }}
+        .stat-value.down {{ color: var(--red); }}
+        .stat-value.muted {{ color: var(--text-secondary); }}
+        .rec-badge {{ color: white; font-size: 0.85rem; font-weight: 700; padding: 6px 14px; border-radius: 999px; }}
+        .charts {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }}
+        .chart-card {{ background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }}
+        .assess {{ margin-top: 10px; font-size: 0.85rem; font-weight: 600; text-align: center; }}
+        .section-title {{ font-size: 1.1rem; font-weight: 700; margin-bottom: 16px; }}
+        .section-title .count {{ color: var(--text-muted); font-weight: 500; font-size: 0.9rem; }}
+        .fh-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }}
+        .fh-card {{ display: block; background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 18px 16px; text-decoration: none; color: var(--text-primary); transition: all 0.15s; }}
+        .fh-card:hover {{ background: var(--bg-card-hover); border-color: var(--accent-blue); transform: translateY(-2px); }}
+        .fh-card.active {{ border-color: var(--accent-blue); box-shadow: 0 0 0 2px rgba(59,130,246,0.3); }}
+        .fh-card-symbol {{ font-size: 1.2rem; font-weight: 800; }}
+        .fh-card-label {{ color: var(--text-muted); font-size: 0.78rem; margin-top: 4px; }}
+        .foot-note {{ margin-top: 32px; color: var(--text-muted); font-size: 0.8rem; text-align: center; }}
+    </style>
+</head>
+<body>
+    <div class="bg-grid"></div>
+    <div class="bg-glow"></div>
+    <div class="container">
+        <header>
+            <div class="header-inner">
+                <div class="logo"><div class="logo-icon">SR</div><div class="logo-text">Stock<span>Rating</span></div></div>
+                <div class="provider-tag">Live &middot; FinnhubDataProvider</div>
+            </div>
+        </header>
+        <div class="nav-bar">
+            <a href="/" class="nav-link">Dashboard</a>
+            <a href="/dashboard?ticker={nav_ticker}" class="nav-link">Analysis</a>
+            <a href="/compare?ticker={nav_ticker}" class="nav-link">Compare</a>
+            <a href="/portfolio" class="nav-link">Portfolio</a>
+            <a href="/finnhub" class="nav-link active">Finnhub</a>
+        </div>
+        <div class="page-head">
+            <h1>Finnhub Live Data</h1>
+            <p class="subtitle">Real-time quotes, valuation, financial health, growth and analyst sentiment from the Finnhub API.</p>
+        </div>
+        <form action="/finnhub" method="get" class="search-bar">
+            <input id="fh-search" list="fh-tickers" name="ticker" type="text" placeholder="Search a ticker (e.g. AAPL, NVDA, TSLA)" autocomplete="off" value="{requested}">
+            <datalist id="fh-tickers">{datalist_options}</datalist>
+            <button type="submit">Search</button>
+        </form>
+        {detail_html}
+        <div class="section-title">All Finnhub Tickers <span class="count">({ticker_count})</span></div>
+        <div class="fh-grid">{ticker_cards}</div>
+        <div class="foot-note">Data served by FinnhubDataProvider, cached in-memory (TTL 300s). Live values are refreshed in the background while the app runs.</div>
+    </div>
+    <script>
+        (function () {{
+            var q = document.getElementById('fh-search');
+            var cards = document.querySelectorAll('.fh-card');
+            if (q) {{
+                q.addEventListener('input', function () {{
+                    var term = q.value.trim().toUpperCase();
+                    cards.forEach(function (c) {{
+                        var t = c.getAttribute('data-ticker');
+                        c.style.display = (t.indexOf(term) === 0) ? '' : 'none';
+                    }});
+                }});
+            }}
+        }})();
+    </script>
+</body>
+</html>"#,
+        nav_ticker = nav_ticker,
+        requested = requested,
+        datalist_options = datalist_options,
+        detail_html = detail_html,
+        ticker_count = tickers.len(),
+        ticker_cards = cards,
+    )
 }
 
 async fn api_query_handler(
